@@ -58,10 +58,11 @@ Config is `.env` (copy from `.env.example`). Raising `BACKFILL_DAYS` later resum
   existing rows are backfilled from their retained TPDB `backgrounds`/`metadata`
   JSON. Performer detail galleries decode and deduplicate the stored primary,
   face, thumbnail, and poster URLs.
-- The baseline TPDB algorithm is deliberately simple: only the configured scene
-  categories are eligible; select the largest parsed file by byte size, call
-  `/scenes?parse=<filename>&per_page=1`, and accept the first result. Every
-  attempt is persisted in `tpdb_match_attempts` before later scoring improvements.
+- TPDB matching prefers video files, collapses resolution suffixes into a scene
+  key, and reuses verified sibling matches. API candidates come from filename,
+  site-recent-scene, and text-query searches and must pass conservative
+  site/date/title/performer scoring. Unmatched results are retried with backoff;
+  `--dry-run` performs a one-batch shadow evaluation without outcome writes.
 
 ## Testing
 

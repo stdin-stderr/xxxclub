@@ -193,6 +193,10 @@ CREATE TABLE IF NOT EXISTS tpdb_match_attempts (
     filename          TEXT,
     file_size_bytes   BIGINT,
     method            TEXT NOT NULL DEFAULT 'parse_filename_first',
+    scene_key         TEXT,
+    search_query      TEXT,
+    match_score       NUMERIC,
+    candidate_metadata JSONB NOT NULL DEFAULT '[]'::jsonb,
     status            TEXT NOT NULL CHECK (status IN ('matched', 'unmatched', 'error', 'no_file')),
     candidate_count   INT NOT NULL DEFAULT 0,
     attempts          INT NOT NULL DEFAULT 1,
@@ -205,6 +209,37 @@ CREATE INDEX IF NOT EXISTS idx_tpdb_match_attempts_scene_id
     ON tpdb_match_attempts (scene_id);
 CREATE INDEX IF NOT EXISTS idx_tpdb_match_attempts_status
     ON tpdb_match_attempts (status);
+ALTER TABLE tpdb_match_attempts ADD COLUMN IF NOT EXISTS scene_key TEXT;
+ALTER TABLE tpdb_match_attempts ADD COLUMN IF NOT EXISTS search_query TEXT;
+ALTER TABLE tpdb_match_attempts ADD COLUMN IF NOT EXISTS match_score NUMERIC;
+ALTER TABLE tpdb_match_attempts
+    ADD COLUMN IF NOT EXISTS candidate_metadata JSONB NOT NULL DEFAULT '[]'::jsonb;
+CREATE INDEX IF NOT EXISTS idx_tpdb_match_attempts_scene_key
+    ON tpdb_match_attempts (scene_key) WHERE status = 'matched';
+UPDATE tpdb_match_attempts
+SET scene_key = btrim(
+    regexp_replace(
+        regexp_replace(
+            regexp_replace(
+                lower(filename),
+                '\\.(mp4|mkv|avi|wmv|mov|m4v|ts)$',
+                '',
+                'i'
+            ),
+            '([._ -](480p|720p|1080p|2160p|4k|uhd|fhd|fullhd|x264|x265|h264|h265|hevc))+$',
+            '',
+            'i'
+        ),
+        '[^a-z0-9]+',
+        '.',
+        'g'
+    ),
+    '.'
+)
+WHERE scene_key IS NULL AND filename IS NOT NULL;
+UPDATE tpdb_match_attempts
+SET next_retry_at = now()
+WHERE status = 'unmatched' AND next_retry_at IS NULL;
 """
 
 TORRENT_COLUMNS = [
@@ -430,17 +465,39 @@ async def fetch_tpdb_match_candidates(
     async with pool.acquire() as conn:
         return await conn.fetch(
             """
-            SELECT t.torrent_id, t.title, t.category, t.files
+            SELECT t.torrent_id, t.title, t.category, t.files,
+                   COALESCE(a.attempts, 0) AS attempts
             FROM torrents t
             LEFT JOIN tpdb_match_attempts a ON a.torrent_id = t.torrent_id
             WHERE t.category = ANY($1::text[])
               AND (
                   a.torrent_id IS NULL
                   OR (
-                      a.status = 'error'
-                      AND (a.next_retry_at IS NULL OR a.next_retry_at <= now())
+                      a.status IN ('error', 'unmatched')
+                      AND a.next_retry_at IS NOT NULL
+                      AND a.next_retry_at <= now()
                   )
               )
+            ORDER BY t.added_at DESC, t.torrent_id DESC
+            LIMIT $2
+            """,
+            list(TPDB_CATEGORIES),
+            limit,
+        )
+
+
+async def fetch_tpdb_shadow_candidates(
+    pool: asyncpg.Pool, limit: int
+) -> list[asyncpg.Record]:
+    async with pool.acquire() as conn:
+        return await conn.fetch(
+            """
+            SELECT t.torrent_id, t.title, t.category, t.files,
+                   COALESCE(a.attempts, 0) AS attempts
+            FROM torrents t
+            LEFT JOIN tpdb_match_attempts a ON a.torrent_id = t.torrent_id
+            WHERE t.category = ANY($1::text[])
+              AND (a.torrent_id IS NULL OR a.status = 'unmatched')
             ORDER BY t.added_at DESC, t.torrent_id DESC
             LIMIT $2
             """,
@@ -460,15 +517,24 @@ async def record_tpdb_match_outcome(
     http_status: int | None = None,
     last_error: str | None = None,
     next_retry_at=None,
+    method: str = "parse_filename",
+    scene_key: str | None = None,
+    search_query: str | None = None,
+    match_score: float | None = None,
+    candidate_metadata: list | None = None,
 ) -> None:
     async with pool.acquire() as conn:
         await conn.execute(
             """
             INSERT INTO tpdb_match_attempts (
                 torrent_id, filename, file_size_bytes, status, candidate_count,
-                http_status, last_error, attempted_at, next_retry_at
+                http_status, last_error, attempted_at, next_retry_at, method,
+                scene_key, search_query, match_score, candidate_metadata
             )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, now(), $8)
+            VALUES (
+                $1, $2, $3, $4, $5, $6, $7, now(), $8, $9, $10, $11,
+                $12, $13::jsonb
+            )
             ON CONFLICT (torrent_id) DO UPDATE SET
                 scene_id = NULL,
                 filename = EXCLUDED.filename,
@@ -479,7 +545,12 @@ async def record_tpdb_match_outcome(
                 http_status = EXCLUDED.http_status,
                 last_error = EXCLUDED.last_error,
                 attempted_at = now(),
-                next_retry_at = EXCLUDED.next_retry_at
+                next_retry_at = EXCLUDED.next_retry_at,
+                method = EXCLUDED.method,
+                scene_key = EXCLUDED.scene_key,
+                search_query = EXCLUDED.search_query,
+                match_score = EXCLUDED.match_score,
+                candidate_metadata = EXCLUDED.candidate_metadata
             """,
             torrent_id,
             filename,
@@ -489,6 +560,82 @@ async def record_tpdb_match_outcome(
             http_status,
             last_error,
             next_retry_at,
+            method,
+            scene_key,
+            search_query,
+            match_score,
+            json.dumps(candidate_metadata or []),
+        )
+
+
+async def find_reusable_tpdb_match(
+    pool: asyncpg.Pool,
+    scene_key: str,
+    torrent_id: int,
+) -> asyncpg.Record | None:
+    async with pool.acquire() as conn:
+        return await conn.fetchrow(
+            """
+            SELECT a.scene_id, a.torrent_id AS source_torrent_id
+            FROM tpdb_match_attempts a
+            WHERE a.status = 'matched'
+              AND a.scene_id IS NOT NULL
+              AND a.scene_key = $1
+              AND a.torrent_id <> $2
+            ORDER BY a.attempted_at DESC
+            LIMIT 1
+            """,
+            scene_key,
+            torrent_id,
+        )
+
+
+async def save_reused_tpdb_match(
+    pool: asyncpg.Pool,
+    *,
+    torrent_id: int,
+    scene_id,
+    filename: str,
+    file_size_bytes: int | None,
+    scene_key: str,
+    source_torrent_id: int,
+) -> None:
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO tpdb_match_attempts (
+                torrent_id, scene_id, filename, file_size_bytes, method,
+                scene_key, search_query, match_score, candidate_metadata,
+                status, candidate_count, http_status, last_error, attempted_at,
+                next_retry_at
+            )
+            VALUES (
+                $1,$2,$3,$4,'resolution_sibling',$5,NULL,1,
+                $6::jsonb,'matched',1,200,NULL,now(),NULL
+            )
+            ON CONFLICT (torrent_id) DO UPDATE SET
+                scene_id=EXCLUDED.scene_id,
+                filename=EXCLUDED.filename,
+                file_size_bytes=EXCLUDED.file_size_bytes,
+                method=EXCLUDED.method,
+                scene_key=EXCLUDED.scene_key,
+                search_query=NULL,
+                match_score=1,
+                candidate_metadata=EXCLUDED.candidate_metadata,
+                status='matched',
+                candidate_count=1,
+                attempts=tpdb_match_attempts.attempts + 1,
+                http_status=200,
+                last_error=NULL,
+                attempted_at=now(),
+                next_retry_at=NULL
+            """,
+            torrent_id,
+            scene_id,
+            filename,
+            file_size_bytes,
+            scene_key,
+            json.dumps([{"source_torrent_id": source_torrent_id}]),
         )
 
 
@@ -500,6 +647,11 @@ async def save_tpdb_match(
     file_size_bytes: int | None,
     candidate_count: int,
     bundle: dict,
+    method: str = "parse_filename",
+    scene_key: str | None = None,
+    search_query: str | None = None,
+    match_score: float | None = None,
+    candidate_metadata: list | None = None,
 ) -> None:
     scene = bundle["scene"]
     site = bundle.get("site")
@@ -715,9 +867,13 @@ async def save_tpdb_match(
                 INSERT INTO tpdb_match_attempts (
                     torrent_id, scene_id, filename, file_size_bytes, status,
                     candidate_count, http_status, last_error, attempted_at,
-                    next_retry_at
+                    next_retry_at, method, scene_key, search_query, match_score,
+                    candidate_metadata
                 )
-                VALUES ($1,$2,$3,$4,'matched',$5,200,NULL,now(),NULL)
+                VALUES (
+                    $1,$2,$3,$4,'matched',$5,200,NULL,now(),NULL,$6,$7,$8,$9,
+                    $10::jsonb
+                )
                 ON CONFLICT (torrent_id) DO UPDATE SET
                     scene_id=EXCLUDED.scene_id, filename=EXCLUDED.filename,
                     file_size_bytes=EXCLUDED.file_size_bytes,
@@ -725,13 +881,22 @@ async def save_tpdb_match(
                     candidate_count=EXCLUDED.candidate_count,
                     attempts=tpdb_match_attempts.attempts + 1,
                     http_status=200, last_error=NULL, attempted_at=now(),
-                    next_retry_at=NULL
+                    next_retry_at=NULL, method=EXCLUDED.method,
+                    scene_key=EXCLUDED.scene_key,
+                    search_query=EXCLUDED.search_query,
+                    match_score=EXCLUDED.match_score,
+                    candidate_metadata=EXCLUDED.candidate_metadata
                 """,
                 torrent_id,
                 scene["scene_id"],
                 filename,
                 file_size_bytes,
                 candidate_count,
+                method,
+                scene_key,
+                search_query,
+                match_score,
+                json.dumps(candidate_metadata or []),
             )
 
 

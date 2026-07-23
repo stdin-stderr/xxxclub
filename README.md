@@ -20,7 +20,10 @@ The web UI is available at <http://localhost:8080>. The crawler stores parsed re
 
 Configuration lives in `.env`; see `.env.example` for the available settings.
 
-The first TPDB pass deliberately uses only the largest file in each torrent's
-`files` array and sends its filename through TPDB's `parse` scene search. The
-first returned scene is stored; matched, unmatched, errored, and file-less
-attempts are all recorded in `tpdb_match_attempts` so coverage is measurable.
+The TPDB matcher prefers the largest video file, normalizes resolution siblings,
+and reuses an already verified sibling match when possible. It then tries TPDB's
+filename parser, site-specific recent scenes, and conservative text-search
+fallbacks. Candidates are scored from site, release date, title, and performer
+evidence; ambiguous results remain unmatched and are retried with backoff.
+`python3 tpdb_matcher.py --dry-run --once` evaluates one batch without persisting
+match outcomes.

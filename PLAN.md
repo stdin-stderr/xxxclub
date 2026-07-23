@@ -209,17 +209,21 @@ networks, and performers. These entities are populated only from successful
 TPDB scene matches and use normalized foreign keys plus a scene-performer join
 table.
 
-The initial matching baseline intentionally makes no local similarity judgement:
+The initial no-scoring baseline was replaced after measuring its unmatched
+ledger. The matcher now:
 
 1. Eligible categories are `1080p/FullHD`, `2160p/UHD/4K`, `480p/SD`,
    `720p/HD`, and `VR/VirtualReality`.
-2. Parse every file's human-readable size and select the largest file.
-3. Call TPDB's scene search with `parse=<filename>` and `per_page=1`.
-4. Treat the first returned scene as the match.
-5. Persist every outcome in `tpdb_match_attempts`, including unmatched, API
-   errors, and torrents without usable files.
+2. Parse comma-formatted sizes and prefer the largest recognized video file.
+3. Normalize resolution variants into a scene key and reuse verified sibling
+   matches before making an API request.
+4. Search by parsed filename, resolved site's recent scenes, then cleaned text
+   queries.
+5. Score multiple candidates using site, release date, title, and performer
+   evidence; reject ambiguous or stale candidates.
+6. Persist method/query/score/candidate audit data for every outcome and retry
+   unmatched results with increasing backoff.
 
 The matcher runs as its own Compose service and has its own request-rate setting.
 It must not use or mutate the xxxclub crawler's adaptive limiter or crawl state.
-The outcome ledger provides the denominator and baseline match rate needed before
-adding more selective scoring.
+`--dry-run` evaluates one batch without persisting match outcomes.
