@@ -14,9 +14,23 @@ The web UI is available at <http://localhost:8080>. The crawler stores parsed re
 ## Services
 
 - `db` — PostgreSQL 16 database
-- `scraper` — rate-limited crawler
-- `web` — read-only torrent and TPDB catalog archive/detail pages
-- `tpdb-matcher` — rate-limited filename matcher for supported scene categories
+- `scraper` — rate-limited crawler, using the shared `xxxclub:local` image
+- `web` — read-only archive UI, using the shared `xxxclub:local` image
+- `tpdb-matcher` — rate-limited filename matcher, using the shared `xxxclub:local` image
+
+Compose selects the application task through the image command: `scraper`,
+`web`, or `tpdb-matcher`.
+
+To run the image published by GitHub Actions, use
+[`docker-compose.ghcr.yml`](docker-compose.ghcr.yml):
+
+```sh
+cp .env.example .env
+docker compose -f docker-compose.ghcr.yml up -d
+```
+
+Pushes to `main` publish `latest`, `main`, and a commit SHA tag to GHCR.
+Version tags such as `v1.2.3` also publish `1.2.3` and `1.2`.
 
 Configuration lives in `.env`; see `.env.example` for the available settings.
 

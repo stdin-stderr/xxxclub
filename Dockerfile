@@ -7,5 +7,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY db.py rate_limiter.py scraper.py crawler.py entrypoint.py webapp.py tpdb_client.py tpdb_matcher.py ./
 COPY web/ web/
+COPY docker-entrypoint.sh /usr/local/bin/xxxclub
 
-CMD ["python3", "entrypoint.py"]
+RUN chmod +x /usr/local/bin/xxxclub
+
+ENTRYPOINT ["xxxclub"]
+CMD ["scraper"]

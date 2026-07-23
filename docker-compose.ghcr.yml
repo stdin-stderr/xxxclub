@@ -1,7 +1,6 @@
 x-xxxclub-image: &xxxclub-image
-  image: ${XXXCLUB_IMAGE:-xxxclub:local}
-  build:
-    context: .
+  image: ghcr.io/stdin-stderr/xxxclub:latest
+  pull_policy: always
 
 services:
   db:
