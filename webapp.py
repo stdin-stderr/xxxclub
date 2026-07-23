@@ -7,7 +7,9 @@ import logging
 import math
 import os
 import sys
+import uuid
 from pathlib import Path
+from urllib.parse import urlencode
 
 import jinja2
 from aiohttp import web
@@ -39,6 +41,20 @@ def format_size(n) -> str:
     return f"{size:.2f} {SIZE_UNITS[unit_i]}"
 
 
+def format_duration(seconds) -> str:
+    total_seconds = int(seconds)
+    hours, remainder = divmod(total_seconds, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    parts = []
+    if hours:
+        parts.append(f"{hours}h")
+    if minutes:
+        parts.append(f"{minutes}m")
+    if seconds or not parts:
+        parts.append(f"{seconds}s")
+    return " ".join(parts)
+
+
 def format_date(dt, with_time: bool = False) -> str:
     if dt is None:
         return "Pending"
@@ -58,6 +74,7 @@ env = jinja2.Environment(
     autoescape=jinja2.select_autoescape(["html"]),
 )
 env.filters["size"] = format_size
+env.filters["duration"] = format_duration
 env.filters["date"] = format_date
 env.filters["datetime_full"] = format_datetime_full
 
@@ -73,6 +90,29 @@ SORT_LABELS = {
     "seeders_desc": "Seeders, descending",
     "size_desc": "Size, descending",
     "downloads_desc": "Downloads, descending",
+}
+
+CATALOG_LABELS = {
+    "scenes": {
+        "singular": "Scene",
+        "plural": "Scenes",
+        "related": "performers",
+    },
+    "sites": {
+        "singular": "Site",
+        "plural": "Sites",
+        "related": "scenes",
+    },
+    "networks": {
+        "singular": "Network",
+        "plural": "Networks",
+        "related": "sites",
+    },
+    "performers": {
+        "singular": "Performer",
+        "plural": "Performers",
+        "related": "scenes",
+    },
 }
 
 
@@ -107,7 +147,7 @@ async def archive_handler(request: web.Request) -> web.Response:
         params.update(overrides)
         params = {k: v for k, v in params.items() if v}
         query = "&".join(f"{k}={v}" for k, v in params.items())
-        return f"/?{query}" if query else "/"
+        return f"/torrents/?{query}" if query else "/torrents/"
 
     return render(
         "archive.html",
@@ -149,6 +189,79 @@ async def detail_handler(request: web.Request) -> web.Response:
     return render("detail.html", t=t, total_all_fmt=f"{total_all:,}")
 
 
+async def catalog_archive_handler(request: web.Request) -> web.Response:
+    entity = request.match_info.get("entity", "scenes")
+    if entity not in CATALOG_LABELS:
+        raise web.HTTPNotFound()
+    pool = request.app["pool"]
+    q = request.query.get("q", "").strip() or None
+    try:
+        page = max(1, int(request.query.get("page", "1")))
+    except ValueError:
+        page = 1
+    offset = (page - 1) * PAGE_SIZE
+
+    total = await db.count_catalog_entities(pool, entity, q)
+    records = await db.list_catalog_entities(
+        pool, entity, q=q, limit=PAGE_SIZE, offset=offset
+    )
+    total_pages = max(1, math.ceil(total / PAGE_SIZE))
+    total_all = await db.count_torrents(pool)
+    archive_path = "/" if entity == "scenes" else f"/{entity}"
+
+    def page_url(**overrides) -> str:
+        params = {"q": q, "page": page}
+        params.update(overrides)
+        query = urlencode({k: v for k, v in params.items() if v})
+        return f"{archive_path}?{query}" if query else archive_path
+
+    return render(
+        "catalog_archive.html",
+        entity=entity,
+        labels=CATALOG_LABELS[entity],
+        records=records,
+        q=q or "",
+        total=total,
+        total_fmt=f"{total:,}",
+        total_all_fmt=f"{total_all:,}",
+        start=offset + 1 if total else 0,
+        end=min(offset + PAGE_SIZE, total),
+        page=page,
+        total_pages=total_pages,
+        page_url=page_url,
+    )
+
+
+async def catalog_detail_handler(request: web.Request) -> web.Response:
+    entity = request.match_info["entity"]
+    if entity not in CATALOG_LABELS:
+        raise web.HTTPNotFound()
+    raw_id = request.match_info["entity_id"]
+    try:
+        entity_id = (
+            uuid.UUID(raw_id) if entity in {"scenes", "performers"} else int(raw_id)
+        )
+    except (ValueError, TypeError):
+        raise web.HTTPNotFound()
+
+    pool = request.app["pool"]
+    record = await db.get_catalog_detail(pool, entity, entity_id)
+    if record is None:
+        raise web.HTTPNotFound(text=f"{CATALOG_LABELS[entity]['singular']} not found")
+    total_all = await db.count_torrents(pool)
+    return render(
+        "catalog_detail.html",
+        entity=entity,
+        labels=CATALOG_LABELS[entity],
+        record=record,
+        total_all_fmt=f"{total_all:,}",
+    )
+
+
+async def scenes_redirect_handler(request: web.Request) -> web.Response:
+    raise web.HTTPMovedPermanently(location="/")
+
+
 def dsn_from_env() -> str:
     return (
         f"postgresql://{os.environ.get('POSTGRES_USER', 'xxxclub')}:"
@@ -163,9 +276,18 @@ async def make_app() -> web.Application:
     app = web.Application()
     app["pool"] = pool
     app.add_routes([
-        web.get("/", archive_handler),
+        web.get("/", catalog_archive_handler),
+        web.get("/torrents", archive_handler),
+        web.get("/torrents/", archive_handler),
+        web.get("/scenes", scenes_redirect_handler),
+        web.get("/scenes/", scenes_redirect_handler),
         web.get("/tags", tags_handler),
         web.get("/torrent/{torrent_id}", detail_handler),
+        web.get("/{entity:scenes|sites|networks|performers}", catalog_archive_handler),
+        web.get(
+            "/{entity:scenes|sites|networks|performers}/{entity_id}",
+            catalog_detail_handler,
+        ),
     ])
 
     async def close_pool(app: web.Application) -> None:

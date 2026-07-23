@@ -61,5 +61,23 @@ services:
       POSTGRES_PORT: 5432
       WEB_PORT: 8080
 
+  tpdb-matcher:
+    build: .
+    restart: unless-stopped
+    command: ["python3", "tpdb_matcher.py"]
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-xxxclub}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-xxxclub}
+      POSTGRES_DB: ${POSTGRES_DB:-xxxclub}
+      POSTGRES_HOST: db
+      POSTGRES_PORT: 5432
+      THEPORNDB_API_KEY: ${THEPORNDB_API_KEY}
+      TPDB_REQUESTS_PER_SECOND: ${TPDB_REQUESTS_PER_SECOND:-1}
+      TPDB_BATCH_SIZE: ${TPDB_BATCH_SIZE:-25}
+      TPDB_CYCLE_INTERVAL: ${TPDB_CYCLE_INTERVAL:-60}
+
 volumes:
   xxxclub_pgdata:

@@ -2,7 +2,7 @@
 {% block title %}All Tags &mdash; XXXClub Index{% endblock %}
 
 {% block breadcrumb %}
-  <div class="breadcrumb"><a href="/">&larr; Back to the Archive</a> &nbsp;/&nbsp; All Tags</div>
+  <div class="breadcrumb"><a href="/torrents/">&larr; Back to the Archive</a> &nbsp;/&nbsp; All Tags</div>
 {% endblock %}
 
 {% block extra_style %}
@@ -57,7 +57,7 @@
 {% if tags %}
 <div class="tags-page" id="tags-list">
   {% for t in tags %}
-    <a class="tag-pill" href="/?tag={{ t.tag }}" data-tag="{{ t.tag | lower }}">{{ t.tag }} <span class="n">{{ t.n }}</span></a>
+    <a class="tag-pill" href="/torrents/?tag={{ t.tag }}" data-tag="{{ t.tag | lower }}">{{ t.tag }} <span class="n">{{ t.n }}</span></a>
   {% endfor %}
 </div>
 <div class="empty-state" id="tags-empty" style="display:none;">No tags match your filter.</div>

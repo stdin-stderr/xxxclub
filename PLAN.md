@@ -199,4 +199,27 @@ Entrypoint must **not** dump the full environment on startup (V1's `entrypoint.p
 5. `entrypoint.py` — startup, masked config logging, runs `crawler.py` loop
 6. `Dockerfile` + `docker-compose.yml` + `.env.example`
 
-Scope: scraper + DB only, no API/web UI/metadata-matching/Stremio for V2 (can port later).
+Original scope: scraper + DB only. The later TPDB catalog extension is documented
+below rather than folded into crawler state or rate limiting.
+
+## TPDB catalog extension
+
+The read-only web UI exposes archives and detail pages for scenes, sites,
+networks, and performers. These entities are populated only from successful
+TPDB scene matches and use normalized foreign keys plus a scene-performer join
+table.
+
+The initial matching baseline intentionally makes no local similarity judgement:
+
+1. Eligible categories are `1080p/FullHD`, `2160p/UHD/4K`, `480p/SD`,
+   `720p/HD`, and `VR/VirtualReality`.
+2. Parse every file's human-readable size and select the largest file.
+3. Call TPDB's scene search with `parse=<filename>` and `per_page=1`.
+4. Treat the first returned scene as the match.
+5. Persist every outcome in `tpdb_match_attempts`, including unmatched, API
+   errors, and torrents without usable files.
+
+The matcher runs as its own Compose service and has its own request-rate setting.
+It must not use or mutate the xxxclub crawler's adaptive limiter or crawl state.
+The outcome ledger provides the denominator and baseline match rate needed before
+adding more selective scoring.

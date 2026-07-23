@@ -64,6 +64,13 @@
     font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:var(--ink-soft);
   }
   .breadcrumb a{text-decoration:none;border-bottom:1px dotted var(--ink-soft);}
+  .catalog-nav{
+    display:flex;justify-content:center;gap:18px;flex-wrap:wrap;
+    padding:0 24px 18px;font-size:11px;letter-spacing:.12em;
+    text-transform:uppercase;color:var(--ink-soft);
+  }
+  .catalog-nav a{text-decoration:none;border-bottom:1px solid transparent;}
+  .catalog-nav a:hover{color:var(--accent);border-color:var(--accent);}
 
   footer{
     max-width:1200px;
@@ -118,6 +125,13 @@
   </div>
   <h1 class="masthead-title"><span class="amp">XXXClub</span> index</h1>
   {% block masthead_sub %}{% endblock %}
+  <nav class="catalog-nav" aria-label="Catalog">
+    <a href="/torrents/">Torrents</a>
+    <a href="/">Scenes</a>
+    <a href="/sites">Sites</a>
+    <a href="/networks">Networks</a>
+    <a href="/performers">Performers</a>
+  </nav>
 </header>
 {% block breadcrumb %}{% endblock %}
 <hr class="rule">

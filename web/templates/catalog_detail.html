@@ -1,0 +1,246 @@
+{% extends "layout.html" %}
+{% set title = record.title if entity == 'scenes' else record.name %}
+{% set hero_image = record.background_url if entity == 'scenes' else ((record.images[0] if record.images else none) if entity == 'performers' else (record.poster_url or record.image_url or record.face_url or record.logo_url)) %}
+{% block title %}{{ title }} &mdash; {{ labels.singular }}{% endblock %}
+
+{% block breadcrumb %}
+<div class="breadcrumb"><a href="{{ '/' if entity == 'scenes' else '/' ~ entity }}">&larr; {{ labels.plural }}</a> &nbsp;/&nbsp; {{ title }}</div>
+{% endblock %}
+
+{% block extra_style %}
+<style>
+  .detail-wrap{max-width:1100px;margin:0 auto;padding:34px 24px 54px;}
+  .hero{display:grid;grid-template-columns:minmax(220px,340px) 1fr;gap:34px;align-items:start;margin-bottom:36px;}
+  .hero-image{aspect-ratio:3/4;border:1px solid var(--ink);background:var(--cream-dark);display:flex;align-items:center;justify-content:center;overflow:hidden;}
+  .hero.scene-hero{grid-template-columns:1fr;margin-bottom:28px;}
+  .hero.scene-hero .hero-image{aspect-ratio:16/9;width:100%;}
+  .hero-image img{width:100%;height:100%;object-fit:cover;cursor:zoom-in;}
+  .hero-image span{font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--ink-soft);}
+  .kicker{font-size:11px;letter-spacing:.16em;text-transform:uppercase;color:var(--accent);margin-bottom:8px;}
+  h2{font-size:clamp(28px,4vw,46px);line-height:1.12;margin:0 0 16px;}
+  .lede{font-size:16px;color:var(--ink-soft);font-style:italic;white-space:pre-wrap;}
+  .external{display:inline-block;margin-top:18px;text-decoration:none;border-bottom:1px solid var(--ink);font-size:12px;text-transform:uppercase;letter-spacing:.1em;}
+  .scene-overview,.scene-torrent-tags{display:grid;grid-template-columns:minmax(0,3fr) minmax(200px,1fr);gap:28px;margin-bottom:28px;}
+  .scene-media{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:28px;}
+  .scene-media h3{grid-column:1/-1;font-size:11px;letter-spacing:.14em;text-transform:uppercase;margin:0;}
+  .scene-media figure{margin:0;aspect-ratio:16/9;border:1px solid var(--ink);background:var(--card);overflow:hidden;}
+  .scene-media .trailer-item{grid-column:1/-1;}
+  .scene-media img,.scene-media video{width:100%;height:100%;object-fit:cover;display:block;}
+  .scene-media img{cursor:zoom-in;}
+  .panels{display:grid;grid-template-columns:2fr 1fr;gap:28px;}
+  .panel{border-top:2px solid var(--ink);padding-top:12px;margin-bottom:28px;}
+  .panel h3{font-size:12px;letter-spacing:.14em;text-transform:uppercase;margin:0 0 14px;}
+  .facts{margin:0;}
+  .fact{display:grid;grid-template-columns:125px 1fr;gap:14px;padding:8px 0;border-bottom:1px dashed #cfc6b2;font-size:13px;}
+  .fact dt{color:var(--ink-soft);}.fact dd{margin:0;font-weight:700;word-break:break-word;}
+  .chips{display:flex;gap:7px;flex-wrap:wrap;}
+  .chip{border:1px solid var(--ink);border-radius:100px;padding:5px 10px;font-size:11px;}
+  .related-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;}
+  .related{border:1px solid var(--ink);background:var(--card);}
+  .related a{text-decoration:none;}
+  .related-img{background:var(--cream-dark);overflow:hidden;display:flex;align-items:center;justify-content:center;}
+  .related-img.scene{aspect-ratio:16/9;}
+  .related-img.portrait{aspect-ratio:3/4;}
+  .related-img img{width:100%;height:100%;object-fit:cover;}
+  .related-name{padding:9px;font-size:12px;font-weight:700;}
+  .torrent-row{padding:10px 0;border-bottom:1px dashed #cfc6b2;font-size:13px;}
+  .torrent-head{display:flex;align-items:baseline;justify-content:space-between;gap:12px;}
+  .torrent-row a{font-weight:700;text-decoration:none}
+  .torrent-row small{display:block;color:var(--ink-soft);margin-top:4px;word-break:break-all;}
+  .magnet-link{white-space:nowrap;color:var(--accent);font-size:11px;letter-spacing:.06em;text-transform:uppercase;}
+  .torrent-meta{display:flex;gap:12px;flex-wrap:wrap;margin-top:5px;color:var(--ink-soft);font-size:11px;}
+  .torrent-meta .seed{color:var(--good);font-weight:700;}
+  .torrent-meta .leech{color:var(--accent);font-weight:700;}
+  .performer-gallery{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;}
+  .performer-gallery figure{margin:0;border:1px solid var(--ink);background:var(--card);aspect-ratio:3/4;overflow:hidden;}
+  .performer-gallery img{width:100%;height:100%;object-fit:cover;display:block;cursor:zoom-in;}
+  .catalog-lightbox{
+    display:none;position:fixed;inset:0;z-index:1000;
+    background:rgba(10,8,6,.92);align-items:center;justify-content:center;
+    padding:40px;
+  }
+  .catalog-lightbox.open{display:flex;}
+  .catalog-lightbox img{max-width:100%;max-height:100%;object-fit:contain;box-shadow:0 0 40px rgba(0,0,0,.6);}
+  .catalog-lightbox-close{
+    position:fixed;top:18px;right:24px;color:#ece5d6;
+    background:transparent;border:0;cursor:pointer;
+    font:32px/1 Georgia,serif;
+  }
+  .catalog-lightbox-close:hover{color:#d9705a;}
+  @media(max-width:780px){.hero,.panels,.scene-overview,.scene-torrent-tags{grid-template-columns:1fr}.hero-image{max-width:360px}.related-grid{grid-template-columns:repeat(2,1fr)}}
+  @media(max-width:780px){.hero.scene-hero .hero-image{max-width:none}.performer-gallery,.scene-media{grid-template-columns:repeat(2,1fr)}}
+  @media(max-width:480px){.performer-gallery,.scene-media{grid-template-columns:1fr}}
+</style>
+{% endblock %}
+
+{% macro related_cards(items, target_entity) %}
+<div class="related-grid">
+  {% for item in items %}
+  <article class="related">
+    <a href="/{{ target_entity }}/{{ item.id }}">
+      <div class="related-img {{ 'scene' if target_entity == 'scenes' else 'portrait' }}">{% if item.image_url %}<img src="{{ item.image_url }}" alt="{{ item.name }}">{% else %}<span>&mdash;</span>{% endif %}</div>
+      <div class="related-name">{{ item.name }}{% if item.date %}<br><small>{{ item.date | date }}</small>{% endif %}</div>
+    </a>
+  </article>
+  {% endfor %}
+</div>
+{% endmacro %}
+
+{% macro details_table() %}
+<section class="panel">
+  <h3>Details</h3>
+  <dl class="facts">
+    {% if entity == 'scenes' %}
+      <div class="fact"><dt>Release date</dt><dd>{{ record.release_date | date }}</dd></div>
+      <div class="fact"><dt>Site</dt><dd>{% if record.site_id %}<a href="/sites/{{ record.site_id }}">{{ record.site_name }}</a>{% else %}&mdash;{% endif %}</dd></div>
+      <div class="fact"><dt>Network</dt><dd>{% if record.network_id %}<a href="/networks/{{ record.network_id }}">{{ record.network_name }}</a>{% else %}&mdash;{% endif %}</dd></div>
+      <div class="fact"><dt>Duration</dt><dd>{% if record.duration_seconds %}{{ record.duration_seconds | duration }}{% else %}&mdash;{% endif %}</dd></div>
+      <div class="fact"><dt>Rating</dt><dd>{{ record.rating if record.rating is not none else '—' }}</dd></div>
+      <div class="fact"><dt>TPDB ID</dt><dd>{{ record.tpdb_id }}</dd></div>
+    {% elif entity == 'sites' %}
+      <div class="fact"><dt>Network</dt><dd>{% if record.network_id %}<a href="/networks/{{ record.network_id }}">{{ record.network_name }}</a>{% else %}&mdash;{% endif %}</dd></div>
+      <div class="fact"><dt>Short name</dt><dd>{{ record.short_name or '—' }}</dd></div>
+      <div class="fact"><dt>Rating</dt><dd>{{ record.rating if record.rating is not none else '—' }}</dd></div>
+      <div class="fact"><dt>TPDB ID</dt><dd>{{ record.site_id }}</dd></div>
+    {% elif entity == 'networks' %}
+      <div class="fact"><dt>Short name</dt><dd>{{ record.short_name or '—' }}</dd></div>
+      <div class="fact"><dt>Rating</dt><dd>{{ record.rating if record.rating is not none else '—' }}</dd></div>
+      <div class="fact"><dt>TPDB ID</dt><dd>{{ record.network_id }}</dd></div>
+    {% elif entity == 'performers' %}
+      <div class="fact"><dt>Born</dt><dd>{{ record.birth_date | date }}</dd></div>
+      <div class="fact"><dt>Nationality</dt><dd>{{ record.nationality or '—' }}</dd></div>
+      <div class="fact"><dt>Ethnicity</dt><dd>{{ record.ethnicity or '—' }}</dd></div>
+      <div class="fact"><dt>Hair / eyes</dt><dd>{{ record.hair_colour or '—' }} / {{ record.eye_colour or '—' }}</dd></div>
+      <div class="fact"><dt>Measurements</dt><dd>{{ record.measurements or '—' }}</dd></div>
+      <div class="fact"><dt>Height</dt><dd>{{ record.height or '—' }}</dd></div>
+    {% endif %}
+  </dl>
+</section>
+{% endmacro %}
+
+{% block content %}
+<main class="detail-wrap">
+  {% if entity == 'scenes' %}
+    <section class="hero scene-hero">
+      <div class="hero-image">{% if hero_image %}<img src="{{ hero_image }}" alt="{{ title }}" onclick="openCatalogLightbox(this.src, this.alt)">{% else %}<span>No artwork</span>{% endif %}</div>
+    </section>
+
+    <div class="scene-overview">
+      <section>
+        <div class="kicker">{{ labels.singular }}{% if record.site_name %} &middot; {{ record.site_name }}{% endif %}</div>
+        <h2>{{ title }}</h2>
+        {% if record.description %}<div class="lede">{{ record.description }}</div>{% endif %}
+        {% if record.url %}<a class="external" href="{{ record.url }}" rel="noopener">Visit source &rarr;</a>{% endif %}
+      </section>
+      <aside>{{ details_table() }}</aside>
+    </div>
+
+    {% if record.trailer_url or record.torrent_images %}
+    <section class="scene-media panel">
+      <h3>Media</h3>
+      {% if record.trailer_url %}
+      <figure class="trailer-item">
+        <video controls preload="metadata"{% if record.background_url %} poster="{{ record.background_url }}"{% endif %}>
+          <source src="{{ record.trailer_url }}">
+        </video>
+      </figure>
+      {% endif %}
+      {% for image in record.torrent_images %}
+      <figure><img src="{{ image }}" alt="{{ title }} torrent image {{ loop.index }}" loading="lazy" onclick="openCatalogLightbox(this.src, this.alt)"></figure>
+      {% endfor %}
+    </section>
+    {% endif %}
+
+    <div class="scene-torrent-tags">
+      <div>
+        {% if record.torrents %}
+        <section class="panel"><h3>Torrents</h3>
+          {% for torrent in record.torrents %}
+          <div class="torrent-row">
+            <div class="torrent-head">
+              <a href="/torrent/{{ torrent.torrent_id }}">{{ torrent.title }}</a>
+              {% if torrent.magnet %}<a class="magnet-link" href="{{ torrent.magnet }}">&#129522; Magnet</a>{% endif %}
+            </div>
+            <div class="torrent-meta">
+              <span>{{ torrent.category }}</span>
+              <span>{{ torrent.size_bytes | size }}</span>
+              <span class="seed">&uarr; {{ torrent.seeders if torrent.seeders is not none else 0 }} seeders</span>
+              <span class="leech">&darr; {{ torrent.leechers if torrent.leechers is not none else 0 }} leechers</span>
+            </div>
+            <small>{{ torrent.filename }}</small>
+          </div>
+          {% endfor %}
+        </section>
+        {% endif %}
+      </div>
+      <aside>
+        {% if record.tags %}
+        <section class="panel"><h3>Tags</h3><div class="chips">{% for tag in record.tags %}<span class="chip">{{ tag }}</span>{% endfor %}</div></section>
+        {% endif %}
+      </aside>
+    </div>
+
+    {% if record.performers %}
+    <section class="panel"><h3>Performers</h3>{{ related_cards(record.performers, 'performers') }}</section>
+    {% endif %}
+  {% else %}
+    <section class="hero">
+      <div class="hero-image">{% if hero_image %}<img src="{{ hero_image }}" alt="{{ title }}" onclick="openCatalogLightbox(this.src, this.alt)">{% else %}<span>No artwork</span>{% endif %}</div>
+      <div>
+        <div class="kicker">{{ labels.singular }}</div>
+        <h2>{{ title }}</h2>
+        {% if record.description %}<div class="lede">{{ record.description }}</div>{% endif %}
+        {% if entity == 'performers' and record.bio %}<div class="lede">{{ record.bio }}</div>{% endif %}
+        {% if record.url %}<a class="external" href="{{ record.url }}" rel="noopener">Visit source &rarr;</a>{% endif %}
+      </div>
+    </section>
+
+    <div class="panels">
+      <div>
+        {% if entity == 'sites' %}
+          <section class="panel"><h3>Scenes</h3>{{ related_cards(record.scenes, 'scenes') }}</section>
+        {% elif entity == 'networks' %}
+          {% if record.sites %}<section class="panel"><h3>Sites</h3>{{ related_cards(record.sites, 'sites') }}</section>{% endif %}
+          {% if record.scenes %}<section class="panel"><h3>Recent scenes</h3>{{ related_cards(record.scenes, 'scenes') }}</section>{% endif %}
+        {% elif entity == 'performers' %}
+          {% if record.images %}
+          <section class="panel">
+            <h3>All images</h3>
+            <div class="performer-gallery">
+              {% for image in record.images %}
+              <figure><img src="{{ image }}" alt="{{ title }} image {{ loop.index }}" loading="lazy" onclick="openCatalogLightbox(this.src, this.alt)"></figure>
+              {% endfor %}
+            </div>
+          </section>
+          {% endif %}
+          <section class="panel"><h3>Scenes</h3>{{ related_cards(record.scenes, 'scenes') }}</section>
+        {% endif %}
+      </div>
+      <aside>{{ details_table() }}</aside>
+    </div>
+  {% endif %}
+</main>
+
+<div class="catalog-lightbox" id="catalog-lightbox" role="dialog" aria-modal="true" aria-label="Image preview" onclick="if(event.target===this) closeCatalogLightbox()">
+  <button class="catalog-lightbox-close" type="button" onclick="closeCatalogLightbox()" aria-label="Close">&times;</button>
+  <img id="catalog-lightbox-image" src="" alt="">
+</div>
+
+<script>
+  function openCatalogLightbox(src, alt) {
+    const image = document.getElementById('catalog-lightbox-image');
+    image.src = src;
+    image.alt = alt || '';
+    document.getElementById('catalog-lightbox').classList.add('open');
+  }
+  function closeCatalogLightbox() {
+    document.getElementById('catalog-lightbox').classList.remove('open');
+    const image = document.getElementById('catalog-lightbox-image');
+    image.src = '';
+    image.alt = '';
+  }
+  document.addEventListener('keydown', function (event) {
+    if (event.key === 'Escape') closeCatalogLightbox();
+  });
+</script>
+{% endblock %}

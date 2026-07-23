@@ -1,6 +1,9 @@
 # xxxclub V2 scraper
 
-Scrapes `xxxclub.to/torrents/details/{id}` (sequential numeric IDs) into Postgres. Scraper + DB only — no API/web UI/metadata-matching (V1 has those, not ported).
+Scrapes `xxxclub.to/torrents/details/{id}` (sequential numeric IDs) into Postgres.
+It also serves a read-only archive and runs a separate TPDB filename matcher for
+scene categories. The matcher is intentionally isolated from crawl/rate-limit
+state.
 
 Full design rationale lives in [PLAN.md](PLAN.md) — read it before changing crawl logic, schema, or rate limiting. Reference fixture: `450462.html` (saved details page, used to build/test the parser without network calls).
 
@@ -11,6 +14,9 @@ Full design rationale lives in [PLAN.md](PLAN.md) — read it before changing cr
 - `scraper.py` — fetch + parse one details page; `parse_details_html()` is pure/offline-testable against the fixture
 - `crawler.py` — unified loop: frontier scan/extend → backward drain chunk → age-tiered refresh
 - `entrypoint.py` — env config (masked secrets in logs) + starts the crawler loop
+- `tpdb_client.py` — TPDB request pacing, largest-file selection, response mapping
+- `tpdb_matcher.py` — independent matching loop + outcome coverage logging
+- `webapp.py` / `web/templates/` — torrent and TPDB entity archive/detail pages
 
 ## Running
 
@@ -45,6 +51,17 @@ Config is `.env` (copy from `.env.example`). Raising `BACKFILL_DAYS` later resum
 - Refresh cadence has no separate `<24h` tier — `<7d` (including brand-new torrents) all refresh every 6h; see `REFRESH_TIERS` in `crawler.py`.
 - `description_html` was dropped in favor of `description_text` (plain text, screenshots/MediaInfo stripped) + `media_info` (jsonb, parsed from the `.description`'s monospace MediaInfo block; `null` when a release has no MediaInfo, e.g. image-only posts). See [PLAN.md](PLAN.md) Retention decision.
 - Schema changes so far were applied via full re-ingest (`docker compose down -v` + fresh `up -d`), not in-place migrations — there is no migration path in `db.py` currently. Add one deliberately if a future schema change needs to preserve existing data.
+- TPDB tables are an additive schema extension created with `CREATE TABLE IF NOT
+  EXISTS`, so enabling matching does not require wiping the existing torrent
+  volume.
+- TPDB scenes keep a dedicated `background_url` for 16:9 archive/detail artwork;
+  existing rows are backfilled from their retained TPDB `backgrounds`/`metadata`
+  JSON. Performer detail galleries decode and deduplicate the stored primary,
+  face, thumbnail, and poster URLs.
+- The baseline TPDB algorithm is deliberately simple: only the configured scene
+  categories are eligible; select the largest parsed file by byte size, call
+  `/scenes?parse=<filename>&per_page=1`, and accept the first result. Every
+  attempt is persisted in `tpdb_match_attempts` before later scoring improvements.
 
 ## Testing
 

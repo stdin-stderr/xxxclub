@@ -5,6 +5,13 @@ import json
 import asyncpg
 
 JSONB_COLUMNS = {"files", "media_info"}
+TPDB_CATEGORIES = (
+    "1080p/FullHD",
+    "2160p/UHD/4K",
+    "480p/SD",
+    "720p/HD",
+    "VR/VirtualReality",
+)
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS torrents (
@@ -61,6 +68,143 @@ CREATE TABLE IF NOT EXISTS crawl_state (
     backfill_confirm_anchor_id  BIGINT
 );
 INSERT INTO crawl_state (id) VALUES (1) ON CONFLICT (id) DO NOTHING;
+
+CREATE TABLE IF NOT EXISTS tpdb_networks (
+    network_id        BIGINT PRIMARY KEY,
+    uuid              UUID UNIQUE,
+    name              TEXT NOT NULL,
+    short_name        TEXT,
+    url               TEXT,
+    description       TEXT,
+    rating            NUMERIC,
+    logo_url          TEXT,
+    favicon_url       TEXT,
+    poster_url        TEXT,
+    metadata          JSONB NOT NULL DEFAULT '{}'::jsonb,
+    updated_at        TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_tpdb_networks_name ON tpdb_networks (name);
+
+CREATE TABLE IF NOT EXISTS tpdb_sites (
+    site_id           BIGINT PRIMARY KEY,
+    uuid              UUID UNIQUE,
+    network_id        BIGINT REFERENCES tpdb_networks(network_id) ON DELETE SET NULL,
+    parent_id         BIGINT,
+    name              TEXT NOT NULL,
+    short_name        TEXT,
+    url               TEXT,
+    description       TEXT,
+    rating            NUMERIC,
+    logo_url          TEXT,
+    favicon_url       TEXT,
+    poster_url        TEXT,
+    metadata          JSONB NOT NULL DEFAULT '{}'::jsonb,
+    updated_at        TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_tpdb_sites_network_id ON tpdb_sites (network_id);
+CREATE INDEX IF NOT EXISTS idx_tpdb_sites_name ON tpdb_sites (name);
+
+CREATE TABLE IF NOT EXISTS tpdb_scenes (
+    scene_id          UUID PRIMARY KEY,
+    tpdb_id           BIGINT UNIQUE NOT NULL,
+    site_id           BIGINT REFERENCES tpdb_sites(site_id) ON DELETE SET NULL,
+    title             TEXT NOT NULL,
+    type              TEXT,
+    slug              TEXT,
+    external_id       TEXT,
+    description       TEXT,
+    rating            NUMERIC,
+    release_date      DATE,
+    url               TEXT,
+    image_url         TEXT,
+    back_image_url    TEXT,
+    poster_url        TEXT,
+    background_url    TEXT,
+    trailer_url       TEXT,
+    duration_seconds  INT,
+    format            TEXT,
+    sku               TEXT,
+    tags              TEXT[],
+    backgrounds       JSONB,
+    hashes            JSONB,
+    directors         JSONB,
+    links             JSONB,
+    metadata          JSONB NOT NULL DEFAULT '{}'::jsonb,
+    updated_at        TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+ALTER TABLE tpdb_scenes ADD COLUMN IF NOT EXISTS background_url TEXT;
+UPDATE tpdb_scenes
+SET background_url = COALESCE(
+    backgrounds->'front'->>'full',
+    backgrounds->'front'->>'large',
+    metadata->'background'->>'full',
+    metadata->'background'->>'large',
+    metadata->>'image'
+)
+WHERE background_url IS NULL;
+CREATE INDEX IF NOT EXISTS idx_tpdb_scenes_site_id ON tpdb_scenes (site_id);
+CREATE INDEX IF NOT EXISTS idx_tpdb_scenes_release_date ON tpdb_scenes (release_date DESC);
+CREATE INDEX IF NOT EXISTS idx_tpdb_scenes_title ON tpdb_scenes (title);
+
+CREATE TABLE IF NOT EXISTS tpdb_performers (
+    performer_id      UUID PRIMARY KEY,
+    tpdb_id           BIGINT UNIQUE,
+    name              TEXT NOT NULL,
+    slug              TEXT,
+    full_name         TEXT,
+    disambiguation    TEXT,
+    bio               TEXT,
+    rating            NUMERIC,
+    gender            TEXT,
+    birth_date        DATE,
+    birthplace        TEXT,
+    nationality       TEXT,
+    ethnicity         TEXT,
+    hair_colour       TEXT,
+    eye_colour        TEXT,
+    height            TEXT,
+    weight            TEXT,
+    measurements      TEXT,
+    cupsize           TEXT,
+    tattoos           TEXT,
+    piercings         TEXT,
+    image_url         TEXT,
+    thumbnail_url     TEXT,
+    face_url          TEXT,
+    extras            JSONB,
+    posters           JSONB,
+    metadata          JSONB NOT NULL DEFAULT '{}'::jsonb,
+    updated_at        TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_tpdb_performers_name ON tpdb_performers (name);
+
+CREATE TABLE IF NOT EXISTS tpdb_scene_performers (
+    scene_id          UUID NOT NULL REFERENCES tpdb_scenes(scene_id) ON DELETE CASCADE,
+    performer_id      UUID NOT NULL REFERENCES tpdb_performers(performer_id) ON DELETE CASCADE,
+    billing_order     INT NOT NULL DEFAULT 0,
+    PRIMARY KEY (scene_id, performer_id)
+);
+CREATE INDEX IF NOT EXISTS idx_tpdb_scene_performers_performer
+    ON tpdb_scene_performers (performer_id);
+
+CREATE TABLE IF NOT EXISTS tpdb_match_attempts (
+    torrent_id        BIGINT PRIMARY KEY REFERENCES torrents(torrent_id) ON DELETE CASCADE,
+    scene_id          UUID REFERENCES tpdb_scenes(scene_id) ON DELETE SET NULL,
+    filename          TEXT,
+    file_size_bytes   BIGINT,
+    method            TEXT NOT NULL DEFAULT 'parse_filename_first',
+    status            TEXT NOT NULL CHECK (status IN ('matched', 'unmatched', 'error', 'no_file')),
+    candidate_count   INT NOT NULL DEFAULT 0,
+    attempts          INT NOT NULL DEFAULT 1,
+    http_status       INT,
+    last_error        TEXT,
+    attempted_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    next_retry_at     TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS idx_tpdb_match_attempts_scene_id
+    ON tpdb_match_attempts (scene_id);
+CREATE INDEX IF NOT EXISTS idx_tpdb_match_attempts_status
+    ON tpdb_match_attempts (status);
 """
 
 TORRENT_COLUMNS = [
@@ -278,6 +422,643 @@ async def top_tags(pool: asyncpg.Pool, limit: int | None = 12) -> list[asyncpg.R
         if limit is None:
             return await conn.fetch(sql)
         return await conn.fetch(f"{sql} LIMIT $1", limit)
+
+
+async def fetch_tpdb_match_candidates(
+    pool: asyncpg.Pool, limit: int
+) -> list[asyncpg.Record]:
+    async with pool.acquire() as conn:
+        return await conn.fetch(
+            """
+            SELECT t.torrent_id, t.title, t.category, t.files
+            FROM torrents t
+            LEFT JOIN tpdb_match_attempts a ON a.torrent_id = t.torrent_id
+            WHERE t.category = ANY($1::text[])
+              AND (
+                  a.torrent_id IS NULL
+                  OR (
+                      a.status = 'error'
+                      AND (a.next_retry_at IS NULL OR a.next_retry_at <= now())
+                  )
+              )
+            ORDER BY t.added_at DESC, t.torrent_id DESC
+            LIMIT $2
+            """,
+            list(TPDB_CATEGORIES),
+            limit,
+        )
+
+
+async def record_tpdb_match_outcome(
+    pool: asyncpg.Pool,
+    *,
+    torrent_id: int,
+    filename: str | None,
+    file_size_bytes: int | None,
+    status: str,
+    candidate_count: int = 0,
+    http_status: int | None = None,
+    last_error: str | None = None,
+    next_retry_at=None,
+) -> None:
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO tpdb_match_attempts (
+                torrent_id, filename, file_size_bytes, status, candidate_count,
+                http_status, last_error, attempted_at, next_retry_at
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7, now(), $8)
+            ON CONFLICT (torrent_id) DO UPDATE SET
+                scene_id = NULL,
+                filename = EXCLUDED.filename,
+                file_size_bytes = EXCLUDED.file_size_bytes,
+                status = EXCLUDED.status,
+                candidate_count = EXCLUDED.candidate_count,
+                attempts = tpdb_match_attempts.attempts + 1,
+                http_status = EXCLUDED.http_status,
+                last_error = EXCLUDED.last_error,
+                attempted_at = now(),
+                next_retry_at = EXCLUDED.next_retry_at
+            """,
+            torrent_id,
+            filename,
+            file_size_bytes,
+            status,
+            candidate_count,
+            http_status,
+            last_error,
+            next_retry_at,
+        )
+
+
+async def save_tpdb_match(
+    pool: asyncpg.Pool,
+    *,
+    torrent_id: int,
+    filename: str,
+    file_size_bytes: int | None,
+    candidate_count: int,
+    bundle: dict,
+) -> None:
+    scene = bundle["scene"]
+    site = bundle.get("site")
+    network = bundle.get("network")
+    performers = bundle.get("performers", [])
+
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            if network:
+                await conn.execute(
+                    """
+                    INSERT INTO tpdb_networks (
+                        network_id, uuid, name, short_name, url, description,
+                        rating, logo_url, favicon_url, poster_url, metadata, updated_at
+                    )
+                    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb,now())
+                    ON CONFLICT (network_id) DO UPDATE SET
+                        uuid=EXCLUDED.uuid, name=EXCLUDED.name,
+                        short_name=EXCLUDED.short_name, url=EXCLUDED.url,
+                        description=EXCLUDED.description, rating=EXCLUDED.rating,
+                        logo_url=EXCLUDED.logo_url, favicon_url=EXCLUDED.favicon_url,
+                        poster_url=EXCLUDED.poster_url, metadata=EXCLUDED.metadata,
+                        updated_at=now()
+                    """,
+                    network["network_id"],
+                    network.get("uuid"),
+                    network["name"],
+                    network.get("short_name"),
+                    network.get("url"),
+                    network.get("description"),
+                    network.get("rating"),
+                    network.get("logo_url"),
+                    network.get("favicon_url"),
+                    network.get("poster_url"),
+                    json.dumps(network.get("metadata") or {}),
+                )
+
+            if site:
+                await conn.execute(
+                    """
+                    INSERT INTO tpdb_sites (
+                        site_id, uuid, network_id, parent_id, name, short_name,
+                        url, description, rating, logo_url, favicon_url,
+                        poster_url, metadata, updated_at
+                    )
+                    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13::jsonb,now())
+                    ON CONFLICT (site_id) DO UPDATE SET
+                        uuid=EXCLUDED.uuid, network_id=EXCLUDED.network_id,
+                        parent_id=EXCLUDED.parent_id, name=EXCLUDED.name,
+                        short_name=EXCLUDED.short_name, url=EXCLUDED.url,
+                        description=EXCLUDED.description, rating=EXCLUDED.rating,
+                        logo_url=EXCLUDED.logo_url, favicon_url=EXCLUDED.favicon_url,
+                        poster_url=EXCLUDED.poster_url, metadata=EXCLUDED.metadata,
+                        updated_at=now()
+                    """,
+                    site["site_id"],
+                    site.get("uuid"),
+                    network["network_id"] if network else None,
+                    site.get("parent_id"),
+                    site["name"],
+                    site.get("short_name"),
+                    site.get("url"),
+                    site.get("description"),
+                    site.get("rating"),
+                    site.get("logo_url"),
+                    site.get("favicon_url"),
+                    site.get("poster_url"),
+                    json.dumps(site.get("metadata") or {}),
+                )
+
+            await conn.execute(
+                """
+                INSERT INTO tpdb_scenes (
+                    scene_id, tpdb_id, site_id, title, type, slug, external_id,
+                    description, rating, release_date, url, image_url,
+                    back_image_url, poster_url, background_url, trailer_url, duration_seconds,
+                    format, sku, tags, backgrounds, hashes, directors, links,
+                    metadata, updated_at
+                )
+                VALUES (
+                    $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,
+                    $17,$18,$19,$20,$21::jsonb,$22::jsonb,$23::jsonb,$24::jsonb,
+                    $25::jsonb,now()
+                )
+                ON CONFLICT (scene_id) DO UPDATE SET
+                    tpdb_id=EXCLUDED.tpdb_id, site_id=EXCLUDED.site_id,
+                    title=EXCLUDED.title, type=EXCLUDED.type, slug=EXCLUDED.slug,
+                    external_id=EXCLUDED.external_id,
+                    description=EXCLUDED.description, rating=EXCLUDED.rating,
+                    release_date=EXCLUDED.release_date, url=EXCLUDED.url,
+                    image_url=EXCLUDED.image_url, back_image_url=EXCLUDED.back_image_url,
+                    poster_url=EXCLUDED.poster_url,
+                    background_url=EXCLUDED.background_url,
+                    trailer_url=EXCLUDED.trailer_url,
+                    duration_seconds=EXCLUDED.duration_seconds,
+                    format=EXCLUDED.format, sku=EXCLUDED.sku, tags=EXCLUDED.tags,
+                    backgrounds=EXCLUDED.backgrounds, hashes=EXCLUDED.hashes,
+                    directors=EXCLUDED.directors, links=EXCLUDED.links,
+                    metadata=EXCLUDED.metadata, updated_at=now()
+                """,
+                scene["scene_id"],
+                scene["tpdb_id"],
+                site["site_id"] if site else None,
+                scene["title"],
+                scene.get("type"),
+                scene.get("slug"),
+                scene.get("external_id"),
+                scene.get("description"),
+                scene.get("rating"),
+                scene.get("release_date"),
+                scene.get("url"),
+                scene.get("image_url"),
+                scene.get("back_image_url"),
+                scene.get("poster_url"),
+                scene.get("background_url"),
+                scene.get("trailer_url"),
+                scene.get("duration_seconds"),
+                scene.get("format"),
+                scene.get("sku"),
+                scene.get("tags"),
+                json.dumps(scene.get("backgrounds")),
+                json.dumps(scene.get("hashes")),
+                json.dumps(scene.get("directors")),
+                json.dumps(scene.get("links")),
+                json.dumps(scene.get("metadata") or {}),
+            )
+
+            await conn.execute(
+                "DELETE FROM tpdb_scene_performers WHERE scene_id = $1",
+                scene["scene_id"],
+            )
+            for order, performer in enumerate(performers):
+                await conn.execute(
+                    """
+                    INSERT INTO tpdb_performers (
+                        performer_id, tpdb_id, name, slug, full_name,
+                        disambiguation, bio, rating, gender, birth_date,
+                        birthplace, nationality, ethnicity, hair_colour,
+                        eye_colour, height, weight, measurements, cupsize,
+                        tattoos, piercings, image_url, thumbnail_url, face_url,
+                        extras, posters, metadata, updated_at
+                    )
+                    VALUES (
+                        $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,
+                        $15,$16,$17,$18,$19,$20,$21,$22,$23,$24,
+                        $25::jsonb,$26::jsonb,$27::jsonb,now()
+                    )
+                    ON CONFLICT (performer_id) DO UPDATE SET
+                        tpdb_id=EXCLUDED.tpdb_id, name=EXCLUDED.name,
+                        slug=EXCLUDED.slug, full_name=EXCLUDED.full_name,
+                        disambiguation=EXCLUDED.disambiguation, bio=EXCLUDED.bio,
+                        rating=EXCLUDED.rating, gender=EXCLUDED.gender,
+                        birth_date=EXCLUDED.birth_date,
+                        birthplace=EXCLUDED.birthplace,
+                        nationality=EXCLUDED.nationality,
+                        ethnicity=EXCLUDED.ethnicity,
+                        hair_colour=EXCLUDED.hair_colour,
+                        eye_colour=EXCLUDED.eye_colour,
+                        height=EXCLUDED.height, weight=EXCLUDED.weight,
+                        measurements=EXCLUDED.measurements,
+                        cupsize=EXCLUDED.cupsize, tattoos=EXCLUDED.tattoos,
+                        piercings=EXCLUDED.piercings,
+                        image_url=EXCLUDED.image_url,
+                        thumbnail_url=EXCLUDED.thumbnail_url,
+                        face_url=EXCLUDED.face_url, extras=EXCLUDED.extras,
+                        posters=EXCLUDED.posters, metadata=EXCLUDED.metadata,
+                        updated_at=now()
+                    """,
+                    performer["performer_id"],
+                    performer.get("tpdb_id"),
+                    performer["name"],
+                    performer.get("slug"),
+                    performer.get("full_name"),
+                    performer.get("disambiguation"),
+                    performer.get("bio"),
+                    performer.get("rating"),
+                    performer.get("gender"),
+                    performer.get("birth_date"),
+                    performer.get("birthplace"),
+                    performer.get("nationality"),
+                    performer.get("ethnicity"),
+                    performer.get("hair_colour"),
+                    performer.get("eye_colour"),
+                    performer.get("height"),
+                    performer.get("weight"),
+                    performer.get("measurements"),
+                    performer.get("cupsize"),
+                    performer.get("tattoos"),
+                    performer.get("piercings"),
+                    performer.get("image_url"),
+                    performer.get("thumbnail_url"),
+                    performer.get("face_url"),
+                    json.dumps(performer.get("extras")),
+                    json.dumps(performer.get("posters")),
+                    json.dumps(performer.get("metadata") or {}),
+                )
+                await conn.execute(
+                    """
+                    INSERT INTO tpdb_scene_performers (
+                        scene_id, performer_id, billing_order
+                    )
+                    VALUES ($1, $2, $3)
+                    ON CONFLICT (scene_id, performer_id) DO UPDATE SET
+                        billing_order=EXCLUDED.billing_order
+                    """,
+                    scene["scene_id"],
+                    performer["performer_id"],
+                    order,
+                )
+
+            await conn.execute(
+                """
+                INSERT INTO tpdb_match_attempts (
+                    torrent_id, scene_id, filename, file_size_bytes, status,
+                    candidate_count, http_status, last_error, attempted_at,
+                    next_retry_at
+                )
+                VALUES ($1,$2,$3,$4,'matched',$5,200,NULL,now(),NULL)
+                ON CONFLICT (torrent_id) DO UPDATE SET
+                    scene_id=EXCLUDED.scene_id, filename=EXCLUDED.filename,
+                    file_size_bytes=EXCLUDED.file_size_bytes,
+                    status='matched',
+                    candidate_count=EXCLUDED.candidate_count,
+                    attempts=tpdb_match_attempts.attempts + 1,
+                    http_status=200, last_error=NULL, attempted_at=now(),
+                    next_retry_at=NULL
+                """,
+                torrent_id,
+                scene["scene_id"],
+                filename,
+                file_size_bytes,
+                candidate_count,
+            )
+
+
+async def get_tpdb_match_stats(pool: asyncpg.Pool) -> dict:
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            SELECT
+                count(*) FILTER (
+                    WHERE t.category = ANY($1::text[])
+                ) AS eligible,
+                count(a.torrent_id) FILTER (
+                    WHERE t.category = ANY($1::text[])
+                ) AS attempted,
+                count(*) FILTER (
+                    WHERE t.category = ANY($1::text[]) AND a.status = 'matched'
+                ) AS matched,
+                count(*) FILTER (
+                    WHERE t.category = ANY($1::text[]) AND a.status = 'unmatched'
+                ) AS unmatched,
+                count(*) FILTER (
+                    WHERE t.category = ANY($1::text[]) AND a.status = 'error'
+                ) AS errors,
+                count(*) FILTER (
+                    WHERE t.category = ANY($1::text[]) AND a.status = 'no_file'
+                ) AS no_file
+            FROM torrents t
+            LEFT JOIN tpdb_match_attempts a ON a.torrent_id = t.torrent_id
+            """,
+            list(TPDB_CATEGORIES),
+        )
+    stats = dict(row)
+    stats["pending"] = max(0, stats["eligible"] - stats["attempted"])
+    stats["match_rate"] = (
+        stats["matched"] / stats["attempted"] * 100 if stats["attempted"] else 0.0
+    )
+    return stats
+
+
+CATALOG_ENTITY_CONFIG = {
+    "scenes": {
+        "count": "SELECT count(*) FROM tpdb_scenes WHERE ($1::text IS NULL OR title ILIKE $1)",
+        "list": """
+            SELECT s.scene_id AS id, s.title AS name, s.release_date AS date,
+                   COALESCE(s.background_url, s.image_url, s.poster_url) AS image_url,
+                   st.name AS secondary, count(DISTINCT sp.performer_id) AS related_count
+            FROM tpdb_scenes s
+            LEFT JOIN tpdb_sites st ON st.site_id = s.site_id
+            LEFT JOIN tpdb_scene_performers sp ON sp.scene_id = s.scene_id
+            WHERE ($1::text IS NULL OR s.title ILIKE $1)
+            GROUP BY s.scene_id, st.name
+            ORDER BY s.release_date DESC NULLS LAST, s.title
+            LIMIT $2 OFFSET $3
+        """,
+    },
+    "sites": {
+        "count": "SELECT count(*) FROM tpdb_sites WHERE ($1::text IS NULL OR name ILIKE $1)",
+        "list": """
+            SELECT st.site_id AS id, st.name, NULL::date AS date,
+                   COALESCE(st.poster_url, st.logo_url) AS image_url,
+                   n.name AS secondary, count(DISTINCT s.scene_id) AS related_count
+            FROM tpdb_sites st
+            LEFT JOIN tpdb_networks n ON n.network_id = st.network_id
+            LEFT JOIN tpdb_scenes s ON s.site_id = st.site_id
+            WHERE ($1::text IS NULL OR st.name ILIKE $1)
+            GROUP BY st.site_id, n.name
+            ORDER BY st.name
+            LIMIT $2 OFFSET $3
+        """,
+    },
+    "networks": {
+        "count": "SELECT count(*) FROM tpdb_networks WHERE ($1::text IS NULL OR name ILIKE $1)",
+        "list": """
+            SELECT n.network_id AS id, n.name, NULL::date AS date,
+                   COALESCE(n.poster_url, n.logo_url) AS image_url,
+                   NULL::text AS secondary, count(DISTINCT st.site_id) AS related_count
+            FROM tpdb_networks n
+            LEFT JOIN tpdb_sites st ON st.network_id = n.network_id
+            WHERE ($1::text IS NULL OR n.name ILIKE $1)
+            GROUP BY n.network_id
+            ORDER BY n.name
+            LIMIT $2 OFFSET $3
+        """,
+    },
+    "performers": {
+        "count": "SELECT count(*) FROM tpdb_performers WHERE ($1::text IS NULL OR name ILIKE $1)",
+        "list": """
+            SELECT p.performer_id AS id, p.name, p.birth_date AS date,
+                   COALESCE(p.image_url, p.face_url, p.thumbnail_url) AS image_url,
+                   p.nationality AS secondary,
+                   count(DISTINCT sp.scene_id) AS related_count
+            FROM tpdb_performers p
+            LEFT JOIN tpdb_scene_performers sp ON sp.performer_id = p.performer_id
+            WHERE ($1::text IS NULL OR p.name ILIKE $1)
+            GROUP BY p.performer_id
+            ORDER BY p.name
+            LIMIT $2 OFFSET $3
+        """,
+    },
+}
+
+
+async def count_catalog_entities(
+    pool: asyncpg.Pool, entity: str, q: str | None = None
+) -> int:
+    config = CATALOG_ENTITY_CONFIG[entity]
+    search = f"%{q}%" if q else None
+    async with pool.acquire() as conn:
+        return await conn.fetchval(config["count"], search)
+
+
+async def list_catalog_entities(
+    pool: asyncpg.Pool,
+    entity: str,
+    *,
+    q: str | None = None,
+    limit: int = 24,
+    offset: int = 0,
+) -> list[asyncpg.Record]:
+    config = CATALOG_ENTITY_CONFIG[entity]
+    search = f"%{q}%" if q else None
+    async with pool.acquire() as conn:
+        return await conn.fetch(config["list"], search, limit, offset)
+
+
+def _performer_image_urls(detail: dict) -> list[str]:
+    images: list[str] = []
+    seen: set[str] = set()
+
+    def add(value) -> None:
+        if isinstance(value, str) and value and value not in seen:
+            seen.add(value)
+            images.append(value)
+
+    def add_profile(profile) -> None:
+        if not isinstance(profile, dict):
+            return
+        add(profile.get("image"))
+        add(profile.get("face"))
+        add(profile.get("thumbnail"))
+        for poster in profile.get("posters") or []:
+            if isinstance(poster, dict):
+                add(poster.get("url"))
+            else:
+                add(poster)
+
+    add(detail.get("image_url"))
+    add(detail.get("face_url"))
+    add(detail.get("thumbnail_url"))
+    posters = detail.get("posters")
+    if isinstance(posters, str):
+        try:
+            posters = json.loads(posters)
+        except json.JSONDecodeError:
+            posters = []
+    for poster in posters or []:
+        if isinstance(poster, dict):
+            add(poster.get("url"))
+        else:
+            add(poster)
+
+    metadata = detail.get("metadata")
+    if isinstance(metadata, str):
+        try:
+            metadata = json.loads(metadata)
+        except json.JSONDecodeError:
+            metadata = {}
+    if isinstance(metadata, dict):
+        add_profile(metadata.get("profile"))
+        add_profile(metadata.get("site_profile"))
+    return images
+
+
+def _torrent_image_urls(torrents: list[dict]) -> list[str]:
+    images: list[str] = []
+    seen: set[str] = set()
+    for torrent in torrents:
+        candidates = [torrent.get("image_url"), *(torrent.get("images") or [])]
+        for value in candidates:
+            if isinstance(value, str) and value and value not in seen:
+                seen.add(value)
+                images.append(value)
+    return images
+
+
+async def get_catalog_detail(pool: asyncpg.Pool, entity: str, entity_id) -> dict | None:
+    async with pool.acquire() as conn:
+        if entity == "scenes":
+            row = await conn.fetchrow(
+                """
+                SELECT s.*, st.name AS site_name, st.network_id,
+                       n.name AS network_name
+                FROM tpdb_scenes s
+                LEFT JOIN tpdb_sites st ON st.site_id = s.site_id
+                LEFT JOIN tpdb_networks n ON n.network_id = st.network_id
+                WHERE s.scene_id = $1
+                """,
+                entity_id,
+            )
+            if row is None:
+                return None
+            detail = dict(row)
+            detail["performers"] = [
+                dict(r)
+                for r in await conn.fetch(
+                    """
+                    SELECT p.performer_id AS id, p.name,
+                           COALESCE(p.face_url, p.thumbnail_url, p.image_url) AS image_url
+                    FROM tpdb_performers p
+                    JOIN tpdb_scene_performers sp
+                      ON sp.performer_id = p.performer_id
+                    WHERE sp.scene_id = $1
+                    ORDER BY sp.billing_order
+                    """,
+                    entity_id,
+                )
+            ]
+            detail["torrents"] = [
+                dict(r)
+                for r in await conn.fetch(
+                    """
+                    SELECT t.torrent_id, t.title, t.category, t.size_bytes,
+                           t.magnet, t.seeders, t.leechers, t.image_url,
+                           t.images, a.filename
+                    FROM tpdb_match_attempts a
+                    JOIN torrents t ON t.torrent_id = a.torrent_id
+                    WHERE a.scene_id = $1
+                    ORDER BY t.added_at DESC
+                    """,
+                    entity_id,
+                )
+            ]
+            detail["torrent_images"] = _torrent_image_urls(detail["torrents"])
+            return detail
+
+        if entity == "sites":
+            row = await conn.fetchrow(
+                """
+                SELECT st.*, n.name AS network_name
+                FROM tpdb_sites st
+                LEFT JOIN tpdb_networks n ON n.network_id = st.network_id
+                WHERE st.site_id = $1
+                """,
+                entity_id,
+            )
+            relation_column = "site_id"
+        elif entity == "networks":
+            row = await conn.fetchrow(
+                "SELECT * FROM tpdb_networks WHERE network_id = $1", entity_id
+            )
+            relation_column = None
+        elif entity == "performers":
+            row = await conn.fetchrow(
+                "SELECT * FROM tpdb_performers WHERE performer_id = $1", entity_id
+            )
+            relation_column = None
+        else:
+            raise KeyError(entity)
+
+        if row is None:
+            return None
+        detail = dict(row)
+
+        if entity == "sites":
+            detail["scenes"] = [
+                dict(r)
+                for r in await conn.fetch(
+                    """
+                    SELECT scene_id AS id, title AS name, release_date AS date,
+                           COALESCE(background_url, image_url, poster_url) AS image_url
+                    FROM tpdb_scenes
+                    WHERE site_id = $1
+                    ORDER BY release_date DESC NULLS LAST
+                    LIMIT 48
+                    """,
+                    entity_id,
+                )
+            ]
+        elif entity == "networks":
+            detail["sites"] = [
+                dict(r)
+                for r in await conn.fetch(
+                    """
+                    SELECT site_id AS id, name,
+                           COALESCE(poster_url, logo_url) AS image_url
+                    FROM tpdb_sites
+                    WHERE network_id = $1
+                    ORDER BY name
+                    """,
+                    entity_id,
+                )
+            ]
+            detail["scenes"] = [
+                dict(r)
+                for r in await conn.fetch(
+                    """
+                    SELECT s.scene_id AS id, s.title AS name,
+                           s.release_date AS date,
+                           COALESCE(s.background_url, s.image_url, s.poster_url) AS image_url
+                    FROM tpdb_scenes s
+                    JOIN tpdb_sites st ON st.site_id = s.site_id
+                    WHERE st.network_id = $1
+                    ORDER BY s.release_date DESC NULLS LAST
+                    LIMIT 48
+                    """,
+                    entity_id,
+                )
+            ]
+        elif entity == "performers":
+            detail["images"] = _performer_image_urls(detail)
+            detail["scenes"] = [
+                dict(r)
+                for r in await conn.fetch(
+                    """
+                    SELECT s.scene_id AS id, s.title AS name,
+                           s.release_date AS date,
+                           COALESCE(s.background_url, s.image_url, s.poster_url) AS image_url
+                    FROM tpdb_scenes s
+                    JOIN tpdb_scene_performers sp ON sp.scene_id = s.scene_id
+                    WHERE sp.performer_id = $1
+                    ORDER BY s.release_date DESC NULLS LAST
+                    LIMIT 48
+                    """,
+                    entity_id,
+                )
+            ]
+        return detail
 
 
 async def confirm_window_all_old(

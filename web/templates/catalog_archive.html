@@ -1,0 +1,73 @@
+{% extends "layout.html" %}
+{% block title %}{{ labels.plural }} &mdash; XXXClub Index{% endblock %}
+
+{% block extra_style %}
+<style>
+  .catalog-head{max-width:1200px;margin:0 auto;padding:30px 24px 18px;}
+  .catalog-head h2{font-size:32px;margin:0 0 6px;}
+  .catalog-head p{margin:0;color:var(--ink-soft);font-style:italic;}
+  .search{max-width:1200px;margin:0 auto;padding:0 24px 26px;display:flex;}
+  .search input{flex:1;min-width:0;padding:11px 13px;border:1px solid var(--ink);background:var(--card);color:var(--ink);font:14px Georgia,serif;}
+  .search button{border:1px solid var(--ink);border-left:0;background:var(--ink);color:var(--cream);padding:0 24px;font:11px Georgia,serif;letter-spacing:.1em;text-transform:uppercase;}
+  .result-meta{max-width:1200px;margin:0 auto;padding:14px 24px;color:var(--ink-soft);font-size:12px;}
+  .catalog-grid{max-width:1200px;margin:0 auto;padding:0 24px 42px;display:grid;grid-template-columns:repeat(4,1fr);gap:20px;}
+  .catalog-card{border:1px solid var(--ink);background:var(--card);}
+  .catalog-card a{text-decoration:none;}
+  .catalog-image{background:var(--cream-dark);overflow:hidden;display:flex;align-items:center;justify-content:center;}
+  .catalog-image.scene{aspect-ratio:16/9;}
+  .catalog-image.portrait{aspect-ratio:3/4;}
+  .catalog-image img{width:100%;height:100%;object-fit:cover;}
+  .catalog-image span{font-size:11px;color:var(--ink-soft);text-transform:uppercase;letter-spacing:.1em;}
+  .catalog-body{padding:14px;}
+  .catalog-body h3{font-size:17px;line-height:1.25;margin:0 0 8px;}
+  .catalog-meta{display:flex;justify-content:space-between;gap:8px;color:var(--ink-soft);font-size:11px;border-top:1px dashed #cfc6b2;padding-top:9px;}
+  .pagination{display:flex;justify-content:center;gap:18px;padding:0 24px 54px;font-size:12px;text-transform:uppercase;letter-spacing:.08em;}
+  .pagination a{text-decoration:none;border-bottom:1px solid var(--ink);}
+  .disabled{color:var(--ink-soft);opacity:.45;}
+  .empty{padding:70px 24px;text-align:center;color:var(--ink-soft);font-style:italic;}
+  @media(max-width:900px){.catalog-grid{grid-template-columns:repeat(2,1fr)}}
+  @media(max-width:520px){.catalog-grid{grid-template-columns:1fr}}
+</style>
+{% endblock %}
+
+{% block content %}
+<section class="catalog-head">
+  <h2>{{ labels.plural }}</h2>
+</section>
+
+<form class="search" method="get" action="{{ '/' if entity == 'scenes' else '/' ~ entity }}">
+  <input type="search" name="q" value="{{ q }}" placeholder="Search {{ labels.plural | lower }} by name&hellip;">
+  <button type="submit">Search</button>
+</form>
+<hr class="rule-thin">
+<div class="result-meta">Showing {{ start }}&ndash;{{ end }} of {{ total_fmt }}</div>
+
+{% if records %}
+<main class="catalog-grid">
+  {% for item in records %}
+  <article class="catalog-card">
+    <a href="/{{ entity }}/{{ item.id }}">
+      <div class="catalog-image {{ 'scene' if entity == 'scenes' else 'portrait' }}">
+        {% if item.image_url %}<img src="{{ item.image_url }}" alt="{{ item.name }}">
+        {% else %}<span>No artwork</span>{% endif %}
+      </div>
+      <div class="catalog-body">
+        <h3>{{ item.name }}</h3>
+        <div class="catalog-meta">
+          <span>{{ item.secondary or (item.date | date if item.date else labels.singular) }}</span>
+          <span>{{ item.related_count }} {{ labels.related }}</span>
+        </div>
+      </div>
+    </a>
+  </article>
+  {% endfor %}
+</main>
+<nav class="pagination">
+  {% if page > 1 %}<a href="{{ page_url(page=page-1) }}">&larr; Previous</a>{% else %}<span class="disabled">&larr; Previous</span>{% endif %}
+  <span>Page {{ page }} of {{ total_pages }}</span>
+  {% if page < total_pages %}<a href="{{ page_url(page=page+1) }}">Next &rarr;</a>{% else %}<span class="disabled">Next &rarr;</span>{% endif %}
+</nav>
+{% else %}
+<div class="empty">No {{ labels.plural | lower }} found.</div>
+{% endif %}
+{% endblock %}
