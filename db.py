@@ -145,6 +145,7 @@ WHERE background_url IS NULL;
 CREATE INDEX IF NOT EXISTS idx_tpdb_scenes_site_id ON tpdb_scenes (site_id);
 CREATE INDEX IF NOT EXISTS idx_tpdb_scenes_release_date ON tpdb_scenes (release_date DESC);
 CREATE INDEX IF NOT EXISTS idx_tpdb_scenes_title ON tpdb_scenes (title);
+CREATE INDEX IF NOT EXISTS idx_tpdb_scenes_tags ON tpdb_scenes USING GIN (tags);
 
 CREATE TABLE IF NOT EXISTS tpdb_performers (
     performer_id      UUID PRIMARY KEY,
@@ -938,7 +939,12 @@ async def get_tpdb_match_stats(pool: asyncpg.Pool) -> dict:
 
 CATALOG_ENTITY_CONFIG = {
     "scenes": {
-        "count": "SELECT count(*) FROM tpdb_scenes WHERE ($1::text IS NULL OR title ILIKE $1)",
+        "count": """
+            SELECT count(*)
+            FROM tpdb_scenes
+            WHERE ($1::text IS NULL OR title ILIKE $1)
+              AND ($2::text IS NULL OR tags @> ARRAY[$2]::text[])
+        """,
         "list": """
             SELECT s.scene_id AS id, s.title AS name, s.release_date AS date,
                    COALESCE(s.background_url, s.image_url, s.poster_url) AS image_url,
@@ -947,9 +953,10 @@ CATALOG_ENTITY_CONFIG = {
             LEFT JOIN tpdb_sites st ON st.site_id = s.site_id
             LEFT JOIN tpdb_scene_performers sp ON sp.scene_id = s.scene_id
             WHERE ($1::text IS NULL OR s.title ILIKE $1)
+              AND ($2::text IS NULL OR s.tags @> ARRAY[$2]::text[])
             GROUP BY s.scene_id, st.name
             ORDER BY s.release_date DESC NULLS LAST, s.title
-            LIMIT $2 OFFSET $3
+            LIMIT $3 OFFSET $4
         """,
     },
     "sites": {
@@ -1000,11 +1007,16 @@ CATALOG_ENTITY_CONFIG = {
 
 
 async def count_catalog_entities(
-    pool: asyncpg.Pool, entity: str, q: str | None = None
+    pool: asyncpg.Pool,
+    entity: str,
+    q: str | None = None,
+    tag: str | None = None,
 ) -> int:
     config = CATALOG_ENTITY_CONFIG[entity]
     search = f"%{q}%" if q else None
     async with pool.acquire() as conn:
+        if entity == "scenes":
+            return await conn.fetchval(config["count"], search, tag)
         return await conn.fetchval(config["count"], search)
 
 
@@ -1013,13 +1025,34 @@ async def list_catalog_entities(
     entity: str,
     *,
     q: str | None = None,
+    tag: str | None = None,
     limit: int = 24,
     offset: int = 0,
 ) -> list[asyncpg.Record]:
     config = CATALOG_ENTITY_CONFIG[entity]
     search = f"%{q}%" if q else None
     async with pool.acquire() as conn:
+        if entity == "scenes":
+            return await conn.fetch(config["list"], search, tag, limit, offset)
         return await conn.fetch(config["list"], search, limit, offset)
+
+
+async def top_scene_tags(
+    pool: asyncpg.Pool, limit: int = 16
+) -> list[asyncpg.Record]:
+    async with pool.acquire() as conn:
+        return await conn.fetch(
+            """
+            SELECT tag, count(*) AS n
+            FROM tpdb_scenes
+            CROSS JOIN LATERAL unnest(tags) AS tag
+            WHERE btrim(tag) <> ''
+            GROUP BY tag
+            ORDER BY n DESC, tag
+            LIMIT $1
+            """,
+            limit,
+        )
 
 
 def _performer_image_urls(detail: dict) -> list[str]:

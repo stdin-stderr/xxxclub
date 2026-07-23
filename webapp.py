@@ -195,22 +195,28 @@ async def catalog_archive_handler(request: web.Request) -> web.Response:
         raise web.HTTPNotFound()
     pool = request.app["pool"]
     q = request.query.get("q", "").strip() or None
+    tag = (
+        request.query.get("tag", "").strip() or None
+        if entity == "scenes"
+        else None
+    )
     try:
         page = max(1, int(request.query.get("page", "1")))
     except ValueError:
         page = 1
     offset = (page - 1) * PAGE_SIZE
 
-    total = await db.count_catalog_entities(pool, entity, q)
+    total = await db.count_catalog_entities(pool, entity, q, tag)
     records = await db.list_catalog_entities(
-        pool, entity, q=q, limit=PAGE_SIZE, offset=offset
+        pool, entity, q=q, tag=tag, limit=PAGE_SIZE, offset=offset
     )
+    tags = await db.top_scene_tags(pool) if entity == "scenes" else []
     total_pages = max(1, math.ceil(total / PAGE_SIZE))
     total_all = await db.count_torrents(pool)
     archive_path = "/" if entity == "scenes" else f"/{entity}"
 
     def page_url(**overrides) -> str:
-        params = {"q": q, "page": page}
+        params = {"q": q, "tag": tag, "page": page}
         params.update(overrides)
         query = urlencode({k: v for k, v in params.items() if v})
         return f"{archive_path}?{query}" if query else archive_path
@@ -221,6 +227,8 @@ async def catalog_archive_handler(request: web.Request) -> web.Response:
         labels=CATALOG_LABELS[entity],
         records=records,
         q=q or "",
+        tag=tag,
+        tags=tags,
         total=total,
         total_fmt=f"{total:,}",
         total_all_fmt=f"{total_all:,}",

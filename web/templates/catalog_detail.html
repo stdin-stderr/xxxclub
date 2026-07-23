@@ -34,14 +34,20 @@
   .fact{display:grid;grid-template-columns:125px 1fr;gap:14px;padding:8px 0;border-bottom:1px dashed #cfc6b2;font-size:13px;}
   .fact dt{color:var(--ink-soft);}.fact dd{margin:0;font-weight:700;word-break:break-word;}
   .chips{display:flex;gap:7px;flex-wrap:wrap;}
-  .chip{border:1px solid var(--ink);border-radius:100px;padding:5px 10px;font-size:11px;}
+  .chip{border:1px solid var(--ink);border-radius:100px;padding:5px 10px;font-size:11px;text-decoration:none;}
+  a.chip:hover{color:var(--accent);border-color:var(--accent);}
   .related-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;}
-  .related{border:1px solid var(--ink);background:var(--card);}
+  .related{border:1px solid var(--ink);background:var(--card);position:relative;}
+  .related:hover,
+  .related:focus-within{z-index:10;}
   .related a{text-decoration:none;}
   .related-img{background:var(--cream-dark);overflow:hidden;display:flex;align-items:center;justify-content:center;}
-  .related-img.scene{aspect-ratio:16/9;}
+  .related-img.scene{aspect-ratio:16/9;overflow:visible;position:relative;}
   .related-img.portrait{aspect-ratio:3/4;}
   .related-img img{width:100%;height:100%;object-fit:cover;}
+  .related-img.scene img{position:relative;z-index:1;transform-origin:center;transition:transform .25s ease,box-shadow .25s ease;}
+  .related:hover .related-img.scene img,
+  .related:focus-within .related-img.scene img{transform:scale(2);box-shadow:0 14px 34px rgba(0,0,0,.45);}
   .related-name{padding:9px;font-size:12px;font-weight:700;}
   .torrent-row{padding:10px 0;border-bottom:1px dashed #cfc6b2;font-size:13px;}
   .torrent-head{display:flex;align-items:baseline;justify-content:space-between;gap:12px;}
@@ -62,11 +68,28 @@
   .catalog-lightbox.open{display:flex;}
   .catalog-lightbox img{max-width:100%;max-height:100%;object-fit:contain;box-shadow:0 0 40px rgba(0,0,0,.6);}
   .catalog-lightbox-close{
-    position:fixed;top:18px;right:24px;color:#ece5d6;
+    position:fixed;top:18px;right:24px;z-index:2;color:#ece5d6;
     background:transparent;border:0;cursor:pointer;
     font:32px/1 Georgia,serif;
   }
   .catalog-lightbox-close:hover{color:#d9705a;}
+  .catalog-lightbox-nav{
+    position:fixed;top:50%;z-index:2;transform:translateY(-50%);
+    width:54px;height:72px;border:1px solid rgba(236,229,214,.55);
+    background:rgba(10,8,6,.65);color:#ece5d6;cursor:pointer;
+    font:38px/1 Georgia,serif;
+  }
+  .catalog-lightbox-nav:hover{background:var(--accent);border-color:var(--accent);}
+  .catalog-lightbox-prev{left:18px;}
+  .catalog-lightbox-next{right:18px;}
+  .catalog-lightbox-nav[hidden]{display:none;}
+  .catalog-lightbox-counter{
+    position:fixed;bottom:16px;left:50%;transform:translateX(-50%);
+    color:#ece5d6;font-size:11px;letter-spacing:.12em;
+  }
+  @media(prefers-reduced-motion:reduce){
+    .related-img.scene img{transition:none;}
+  }
   @media(max-width:780px){.hero,.panels,.scene-overview,.scene-torrent-tags{grid-template-columns:1fr}.hero-image{max-width:360px}.related-grid{grid-template-columns:repeat(2,1fr)}}
   @media(max-width:780px){.hero.scene-hero .hero-image{max-width:none}.performer-gallery,.scene-media{grid-template-columns:repeat(2,1fr)}}
   @media(max-width:480px){.performer-gallery,.scene-media{grid-template-columns:1fr}}
@@ -122,7 +145,7 @@
 <main class="detail-wrap">
   {% if entity == 'scenes' %}
     <section class="hero scene-hero">
-      <div class="hero-image">{% if hero_image %}<img src="{{ hero_image }}" alt="{{ title }}" onclick="openCatalogLightbox(this.src, this.alt)">{% else %}<span>No artwork</span>{% endif %}</div>
+      <div class="hero-image">{% if hero_image %}<img src="{{ hero_image }}" alt="{{ title }}" data-catalog-lightbox onclick="openCatalogLightbox(this)">{% else %}<span>No artwork</span>{% endif %}</div>
     </section>
 
     <div class="scene-overview">
@@ -146,7 +169,7 @@
       </figure>
       {% endif %}
       {% for image in record.torrent_images %}
-      <figure><img src="{{ image }}" alt="{{ title }} torrent image {{ loop.index }}" loading="lazy" onclick="openCatalogLightbox(this.src, this.alt)"></figure>
+      <figure><img src="{{ image }}" alt="{{ title }} torrent image {{ loop.index }}" loading="lazy" data-catalog-lightbox onclick="openCatalogLightbox(this)"></figure>
       {% endfor %}
     </section>
     {% endif %}
@@ -175,7 +198,7 @@
       </div>
       <aside>
         {% if record.tags %}
-        <section class="panel"><h3>Tags</h3><div class="chips">{% for tag in record.tags %}<span class="chip">{{ tag }}</span>{% endfor %}</div></section>
+        <section class="panel"><h3>Tags</h3><div class="chips">{% for tag in record.tags %}<a class="chip" href="/?tag={{ tag | urlencode }}">{{ tag }}</a>{% endfor %}</div></section>
         {% endif %}
       </aside>
     </div>
@@ -185,7 +208,7 @@
     {% endif %}
   {% else %}
     <section class="hero">
-      <div class="hero-image">{% if hero_image %}<img src="{{ hero_image }}" alt="{{ title }}" onclick="openCatalogLightbox(this.src, this.alt)">{% else %}<span>No artwork</span>{% endif %}</div>
+      <div class="hero-image">{% if hero_image %}<img src="{{ hero_image }}" alt="{{ title }}" data-catalog-lightbox onclick="openCatalogLightbox(this)">{% else %}<span>No artwork</span>{% endif %}</div>
       <div>
         <div class="kicker">{{ labels.singular }}</div>
         <h2>{{ title }}</h2>
@@ -208,7 +231,7 @@
             <h3>All images</h3>
             <div class="performer-gallery">
               {% for image in record.images %}
-              <figure><img src="{{ image }}" alt="{{ title }} image {{ loop.index }}" loading="lazy" onclick="openCatalogLightbox(this.src, this.alt)"></figure>
+              <figure><img src="{{ image }}" alt="{{ title }} image {{ loop.index }}" loading="lazy" data-catalog-lightbox onclick="openCatalogLightbox(this)"></figure>
               {% endfor %}
             </div>
           </section>
@@ -223,24 +246,62 @@
 
 <div class="catalog-lightbox" id="catalog-lightbox" role="dialog" aria-modal="true" aria-label="Image preview" onclick="if(event.target===this) closeCatalogLightbox()">
   <button class="catalog-lightbox-close" type="button" onclick="closeCatalogLightbox()" aria-label="Close">&times;</button>
+  <button class="catalog-lightbox-nav catalog-lightbox-prev" id="catalog-lightbox-prev" type="button" onclick="event.stopPropagation(); moveCatalogLightbox(-1)" aria-label="Previous image">&larr;</button>
   <img id="catalog-lightbox-image" src="" alt="">
+  <button class="catalog-lightbox-nav catalog-lightbox-next" id="catalog-lightbox-next" type="button" onclick="event.stopPropagation(); moveCatalogLightbox(1)" aria-label="Next image">&rarr;</button>
+  <div class="catalog-lightbox-counter" id="catalog-lightbox-counter" aria-live="polite"></div>
 </div>
 
 <script>
-  function openCatalogLightbox(src, alt) {
+  let catalogLightboxItems = [];
+  let catalogLightboxIndex = -1;
+
+  function showCatalogLightboxImage(index) {
+    if (!catalogLightboxItems.length) return;
+    catalogLightboxIndex = (index + catalogLightboxItems.length) % catalogLightboxItems.length;
+    const source = catalogLightboxItems[catalogLightboxIndex];
     const image = document.getElementById('catalog-lightbox-image');
-    image.src = src;
-    image.alt = alt || '';
+    image.src = source.currentSrc || source.src;
+    image.alt = source.alt || '';
+    const hasMultiple = catalogLightboxItems.length > 1;
+    document.getElementById('catalog-lightbox-prev').hidden = !hasMultiple;
+    document.getElementById('catalog-lightbox-next').hidden = !hasMultiple;
+    document.getElementById('catalog-lightbox-counter').textContent =
+      hasMultiple ? `${catalogLightboxIndex + 1} / ${catalogLightboxItems.length}` : '';
+  }
+
+  function openCatalogLightbox(trigger) {
+    catalogLightboxItems = Array.from(document.querySelectorAll('[data-catalog-lightbox]'));
+    const selectedIndex = catalogLightboxItems.indexOf(trigger);
+    showCatalogLightboxImage(selectedIndex >= 0 ? selectedIndex : 0);
     document.getElementById('catalog-lightbox').classList.add('open');
   }
+
+  function moveCatalogLightbox(direction) {
+    showCatalogLightboxImage(catalogLightboxIndex + direction);
+  }
+
   function closeCatalogLightbox() {
     document.getElementById('catalog-lightbox').classList.remove('open');
     const image = document.getElementById('catalog-lightbox-image');
     image.src = '';
     image.alt = '';
+    catalogLightboxItems = [];
+    catalogLightboxIndex = -1;
   }
+
   document.addEventListener('keydown', function (event) {
-    if (event.key === 'Escape') closeCatalogLightbox();
+    const lightbox = document.getElementById('catalog-lightbox');
+    if (!lightbox.classList.contains('open')) return;
+    if (event.key === 'Escape') {
+      closeCatalogLightbox();
+    } else if (event.key === 'ArrowLeft') {
+      event.preventDefault();
+      moveCatalogLightbox(-1);
+    } else if (event.key === 'ArrowRight') {
+      event.preventDefault();
+      moveCatalogLightbox(1);
+    }
   });
 </script>
 {% endblock %}
