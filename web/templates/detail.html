@@ -1,0 +1,293 @@
+{% extends "layout.html" %}
+{% block title %}{{ t.title }} &mdash; The Torrent Gazette{% endblock %}
+
+{% block breadcrumb %}
+  <div class="breadcrumb">
+    <a href="/">&larr; Back to the Archive</a> &nbsp;/&nbsp; {{ t.category or 'Uncategorized' }} &nbsp;/&nbsp; ID {{ t.torrent_id }}
+  </div>
+{% endblock %}
+
+{% block extra_style %}
+<style>
+  .wrap{max-width:1100px;margin:0 auto;padding:0 24px;}
+
+  .headline-block{padding:28px 0 20px;text-align:center;}
+  .kicker{
+    font-size:12px;letter-spacing:.18em;text-transform:uppercase;
+    color:var(--accent);margin-bottom:10px;
+  }
+  h1.title{
+    font-size:clamp(24px,3.6vw,38px);
+    font-weight:700;line-height:1.22;margin:0 auto 16px;max-width:900px;
+  }
+  .byline{
+    font-size:13px;color:var(--ink-soft);
+    display:flex;gap:18px;justify-content:center;flex-wrap:wrap;
+    letter-spacing:.02em;
+  }
+  .byline strong{color:var(--ink);font-style:italic;}
+
+  .gallery{
+    display:grid;grid-template-columns:2fr 1fr 1fr;grid-auto-rows:1fr;
+    gap:8px;margin:26px 0;
+  }
+  .gallery .g-main{grid-row:span 2;}
+  .g-thumb{
+    background:repeating-linear-gradient(45deg,#d8d0bf,#d8d0bf 10px,#cfc6b2 10px,#cfc6b2 20px);
+    border:1px solid var(--ink);
+    display:flex;align-items:center;justify-content:center;
+    aspect-ratio:4/3;text-align:center;
+    overflow:hidden;
+  }
+  .gallery .g-main{aspect-ratio:auto;height:100%;}
+  .g-thumb img{
+    width:100%;height:100%;object-fit:cover;display:block;
+    filter:sepia(.15) contrast(1.02);
+  }
+  .g-thumb span{
+    font-size:11px;letter-spacing:.06em;color:var(--ink-soft);
+    font-family:"Courier New",monospace;
+  }
+
+  .action-bar{
+    display:flex;flex-wrap:wrap;gap:14px;align-items:center;
+    padding:18px 0;border-top:1px solid var(--ink);border-bottom:1px solid var(--ink);
+    margin-bottom:30px;
+  }
+  .magnet-box{
+    flex:1;min-width:260px;
+    font-family:"Courier New",monospace;font-size:11.5px;
+    background:var(--card);border:1px solid var(--ink-soft);
+    padding:10px 12px;word-break:break-all;color:var(--ink-soft);
+    display:block;text-decoration:none;
+  }
+  .magnet-box:hover{border-color:var(--accent);color:var(--accent);}
+  .btn{
+    font-family:Georgia,serif;font-size:13px;letter-spacing:.1em;text-transform:uppercase;
+    background:var(--ink);color:var(--cream);border:none;padding:12px 24px;cursor:pointer;
+    text-decoration:none;display:inline-block;white-space:nowrap;
+  }
+  .btn:hover{background:var(--accent);}
+  .stats-strip{
+    display:flex;gap:26px;flex-wrap:wrap;font-size:13px;color:var(--ink-soft);
+  }
+  .stats-strip .lbl{display:block;font-size:9.5px;letter-spacing:.1em;text-transform:uppercase;}
+  .stats-strip .val{font-size:18px;font-weight:700;color:var(--ink);}
+  .val.seed{color:var(--good);}
+  .val.leech{color:var(--accent);}
+
+  .content-grid{
+    display:grid;grid-template-columns:2fr 1fr;gap:40px;padding-bottom:50px;
+  }
+  @media (max-width:800px){.content-grid{grid-template-columns:1fr;}}
+
+  h2.section-title{
+    font-size:13px;letter-spacing:.16em;text-transform:uppercase;
+    border-bottom:2px solid var(--ink);padding-bottom:8px;margin:0 0 16px;
+    display:flex;justify-content:space-between;
+  }
+  .description{
+    font-size:16px;font-style:italic;color:var(--ink-soft);
+    padding:16px 20px;border-left:3px solid var(--accent);background:var(--card);
+    margin-bottom:36px;white-space:pre-wrap;
+  }
+
+  table.media-info{width:100%;border-collapse:collapse;margin-bottom:36px;font-size:13.5px;}
+  table.media-info tr{border-bottom:1px dashed #cfc6b2;}
+  table.media-info tr:last-child{border-bottom:none;}
+  table.media-info td{padding:8px 6px;vertical-align:top;}
+  table.media-info td:first-child{
+    width:130px;font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;
+    color:var(--ink-soft);font-family:Georgia,serif;
+  }
+  table.media-info td:last-child{font-family:"Courier New",monospace;font-size:12.5px;}
+  table.media-info tr.section td{
+    font-weight:700;font-family:Georgia,serif;text-transform:none;color:var(--ink);
+    font-size:12.5px;letter-spacing:.04em;padding-top:14px;
+  }
+
+  ul.file-list{list-style:none;margin:0 0 36px;padding:0;font-size:13.5px;}
+  ul.file-list li{
+    display:flex;justify-content:space-between;gap:12px;
+    padding:9px 0;border-bottom:1px dashed #cfc6b2;
+    font-family:"Courier New",monospace;font-size:12.5px;
+  }
+  ul.file-list li:last-child{border-bottom:none;}
+  ul.file-list .fname{color:var(--ink);word-break:break-all;}
+  ul.file-list .fsize{color:var(--ink-soft);white-space:nowrap;}
+
+  .muted{color:var(--ink-soft);font-style:italic;font-size:13.5px;}
+
+  .side-card{
+    background:var(--card);border:1px solid var(--ink);padding:20px;margin-bottom:24px;
+  }
+  .side-card h3{
+    font-size:11px;letter-spacing:.14em;text-transform:uppercase;
+    color:var(--ink-soft);margin:0 0 12px;
+  }
+  .tags-list{display:flex;flex-wrap:wrap;gap:8px;}
+  .tags-list span{
+    font-size:12px;font-style:italic;padding:5px 12px;border:1px solid var(--ink);
+    border-radius:100px;
+  }
+  .meta-row{
+    display:flex;justify-content:space-between;font-size:13px;
+    padding:8px 0;border-bottom:1px dashed #cfc6b2;
+    gap:12px;
+  }
+  .meta-row:last-child{border-bottom:none;}
+  .meta-row .k{color:var(--ink-soft);white-space:nowrap;}
+  .meta-row .v{font-weight:700;text-align:right;word-break:break-all;}
+
+  .rating-row{display:flex;gap:20px;}
+  .rating-item{text-align:center;flex:1;}
+  .rating-item .num{font-size:26px;font-weight:700;}
+  .rating-item.like .num{color:var(--good);}
+  .rating-item.dislike .num{color:var(--accent);}
+  .rating-item .lbl{font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--ink-soft);}
+
+  @media (prefers-color-scheme: dark){
+    .g-thumb{background:repeating-linear-gradient(45deg,#2a251d,#2a251d 10px,#332c22 10px,#332c22 20px);}
+  }
+  :root[data-theme="dark"] .g-thumb{background:repeating-linear-gradient(45deg,#2a251d,#2a251d 10px,#332c22 10px,#332c22 20px);}
+
+  .g-thumb img{cursor:zoom-in;}
+  .lightbox{
+    display:none;position:fixed;inset:0;z-index:1000;
+    background:rgba(10,8,6,.92);
+    align-items:center;justify-content:center;
+    padding:40px;
+  }
+  .lightbox.open{display:flex;}
+  .lightbox img{max-width:100%;max-height:100%;object-fit:contain;box-shadow:0 0 40px rgba(0,0,0,.6);}
+  .lightbox-close{
+    position:fixed;top:18px;right:24px;
+    font-family:Georgia,serif;font-size:32px;line-height:1;
+    color:#ece5d6;background:transparent;border:none;cursor:pointer;
+  }
+  .lightbox-close:hover{color:#d9705a;}
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="wrap">
+  <div class="headline-block">
+    <div class="kicker">{{ t.category or 'Uncategorized' }}</div>
+    <h1 class="title">{{ t.title }}</h1>
+    <div class="byline">
+      <span>Uploaded by <strong>{{ t.uploader or 'Unknown' }}</strong></span>
+      <span>Added <strong>{{ t.added_at | date(with_time=True) }}</strong></span>
+      <span>Torrent ID <strong>{{ t.torrent_id }}</strong></span>
+    </div>
+  </div>
+
+  <div class="gallery">
+    {% if t.image_url %}
+      <div class="g-thumb g-main"><img src="{{ t.image_url }}" alt="{{ t.title }}" onclick="openLightbox(this.src)"></div>
+    {% else %}
+      <div class="g-thumb g-main"><span>No preview</span></div>
+    {% endif %}
+    {% for img in (t.images or [])[:4] %}
+      <div class="g-thumb"><img src="{{ img }}" alt="Gallery {{ loop.index }}" onclick="openLightbox(this.src)"></div>
+    {% endfor %}
+  </div>
+
+  <div class="lightbox" id="lightbox" onclick="if(event.target===this) closeLightbox()">
+    <button class="lightbox-close" type="button" onclick="closeLightbox()" aria-label="Close">&times;</button>
+    <img id="lightbox-img" src="" alt="">
+  </div>
+
+  <div class="action-bar">
+    <a class="magnet-box" href="{{ t.magnet }}">{{ t.magnet }}</a>
+    <button class="btn" type="button" onclick="navigator.clipboard.writeText(this.previousElementSibling.textContent)">Copy Magnet</button>
+    <div class="stats-strip">
+      <div><span class="lbl">Size</span><span class="val">{{ t.size_bytes | size }}</span></div>
+      <div><span class="lbl">Seeders</span><span class="val seed">{{ t.seeders if t.seeders is not none else 0 }}</span></div>
+      <div><span class="lbl">Leechers</span><span class="val leech">{{ t.leechers if t.leechers is not none else 0 }}</span></div>
+      <div><span class="lbl">Downloads</span><span class="val">{{ t.downloads if t.downloads is not none else 0 }}</span></div>
+    </div>
+  </div>
+
+  <div class="content-grid">
+    <div class="col-main">
+      {% if t.description_text %}
+      <h2 class="section-title">Release Notes</h2>
+      <div class="description">{{ t.description_text }}</div>
+      {% endif %}
+
+      {% if t.media_info %}
+      <h2 class="section-title">Media Information</h2>
+      <table class="media-info">
+        {% for k, v in t.media_info.items() %}
+          {% if v is mapping %}
+            <tr class="section"><td colspan="2">{{ k }}</td></tr>
+            {% for sk, sv in v.items() %}
+              <tr><td>{{ sk }}</td><td>{{ sv }}</td></tr>
+            {% endfor %}
+          {% else %}
+            <tr><td>{{ k }}</td><td>{{ v }}</td></tr>
+          {% endif %}
+        {% endfor %}
+      </table>
+      {% endif %}
+
+      <h2 class="section-title">Files <span style="font-weight:400;">{{ (t.files or []) | length }} items</span></h2>
+      {% if t.files %}
+      <ul class="file-list">
+        {% for f in t.files %}
+          <li><span class="fname">{{ f.filename }}</span><span class="fsize">{{ f.size_text }}</span></li>
+        {% endfor %}
+      </ul>
+      {% else %}
+      <p class="muted">No file list available.</p>
+      {% endif %}
+    </div>
+
+    <div class="col-side">
+      <div class="side-card">
+        <h3>Tags</h3>
+        {% if t.tags %}
+        <div class="tags-list">{% for tg in t.tags %}<span>{{ tg }}</span>{% endfor %}</div>
+        {% else %}
+        <span class="muted">&mdash;</span>
+        {% endif %}
+      </div>
+
+      <div class="side-card">
+        <h3>Details</h3>
+        <div class="meta-row"><span class="k">Category</span><span class="v">{{ t.category or 'Uncategorized' }}</span></div>
+        <div class="meta-row"><span class="k">Size</span><span class="v">{{ t.size_bytes | size }}{% if t.size_bytes %} ({{ '{:,}'.format(t.size_bytes) }} bytes){% endif %}</span></div>
+        <div class="meta-row"><span class="k">Added</span><span class="v">{{ t.added_at | datetime_full }}</span></div>
+        <div class="meta-row"><span class="k">Last Scraped</span><span class="v">{{ t.last_scraped | datetime_full }}</span></div>
+        <div class="meta-row"><span class="k">Uploader</span><span class="v">{{ t.uploader or 'Unknown' }}</span></div>
+        <div class="meta-row"><span class="k">Downloads</span><span class="v">{{ t.downloads if t.downloads is not none else 0 }}</span></div>
+        {% if t.info_hash %}
+        <div class="meta-row"><span class="k">Info Hash</span><span class="v" style="font-family:'Courier New',monospace;font-weight:400;font-size:11px;">{{ t.info_hash }}</span></div>
+        {% endif %}
+      </div>
+
+      <div class="side-card">
+        <h3>Community Rating</h3>
+        <div class="rating-row">
+          <div class="rating-item like"><div class="num">{{ t.likes if t.likes is not none else 0 }}</div><div class="lbl">Likes</div></div>
+          <div class="rating-item dislike"><div class="num">{{ t.dislikes if t.dislikes is not none else 0 }}</div><div class="lbl">Dislikes</div></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+  function openLightbox(src) {
+    document.getElementById('lightbox-img').src = src;
+    document.getElementById('lightbox').classList.add('open');
+  }
+  function closeLightbox() {
+    document.getElementById('lightbox').classList.remove('open');
+    document.getElementById('lightbox-img').src = '';
+  }
+  document.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape') closeLightbox();
+  });
+</script>
+{% endblock %}

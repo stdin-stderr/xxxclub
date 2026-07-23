@@ -1,0 +1,348 @@
+{% extends "layout.html" %}
+{% block title %}The Archive &mdash; XXXClub Index{% endblock %}
+
+{% block masthead_sub %}
+  <div class="masthead-sub">Download Newest Porn Videos on XXXClub.to</div>
+{% endblock %}
+
+{% block extra_style %}
+<style>
+  .search-wrap{
+    max-width:1200px;
+    margin:0 auto;
+    padding:22px 24px 0;
+  }
+  .search-row{
+    display:flex;
+    gap:12px;
+    margin-bottom:16px;
+  }
+  .search-row input[type="search"]{
+    flex:1;
+    font-family:Georgia,serif;
+    font-size:19px;
+    font-style:italic;
+    background:transparent;
+    border:none;
+    border-bottom:2px solid var(--ink);
+    padding:10px 4px;
+    color:var(--ink);
+  }
+  .search-row input[type="search"]::placeholder{color:#9a9282; opacity:1;}
+  .search-row input[type="search"]:focus{outline:none; border-bottom-color:var(--accent);}
+  .search-row button{
+    font-family:Georgia,serif;
+    font-size:13px;
+    letter-spacing:.12em;
+    text-transform:uppercase;
+    background:var(--ink);
+    color:var(--cream);
+    border:none;
+    padding:0 26px;
+    cursor:pointer;
+  }
+  .search-row button:hover{background:var(--accent);}
+
+  .filters{
+    display:flex;
+    flex-wrap:wrap;
+    gap:8px;
+    align-items:center;
+    padding-bottom:20px;
+  }
+  .filters .label{
+    font-size:11px;
+    letter-spacing:.14em;
+    text-transform:uppercase;
+    color:var(--ink-soft);
+    margin-right:6px;
+  }
+  .chip{
+    display:inline-block;
+    font-size:12.5px;
+    letter-spacing:.03em;
+    padding:6px 14px;
+    border:1px solid var(--ink);
+    border-radius:100px;
+    background:transparent;
+    color:var(--ink);
+    cursor:pointer;
+    font-family:Georgia,serif;
+    text-decoration:none;
+  }
+  .chip.active{
+    background:var(--ink);
+    color:var(--cream);
+  }
+  .chip.tag{
+    border-style:dashed;
+    color:var(--ink-soft);
+    font-style:italic;
+  }
+  .chip.tag.active{
+    background:var(--accent);
+    border-color:var(--accent);
+    color:var(--cream);
+  }
+
+  .result-meta{
+    max-width:1200px;
+    margin:0 auto;
+    padding:14px 24px 4px;
+    display:flex;
+    justify-content:space-between;
+    align-items:baseline;
+    font-size:12px;
+    color:var(--ink-soft);
+    letter-spacing:.04em;
+    flex-wrap:wrap;
+    gap:6px;
+  }
+  .result-meta strong{color:var(--ink); font-style:italic;}
+  .sort-form{display:inline;}
+  .sort-form select{
+    font-family:Georgia,serif;font-style:italic;font-size:12px;
+    background:transparent;color:var(--ink);border:none;border-bottom:1px solid var(--ink-soft);
+    padding:2px 4px;
+  }
+  .sort-form select:focus{outline:none;border-bottom-color:var(--accent);}
+
+  .grid{
+    max-width:1200px;
+    margin:0 auto;
+    padding:18px 24px 60px;
+    display:grid;
+    grid-template-columns:repeat(4,1fr);
+    gap:22px;
+  }
+  @media (max-width:1000px){ .grid{grid-template-columns:repeat(2,1fr);} }
+  @media (max-width:600px){ .grid{grid-template-columns:1fr;} }
+
+  .empty-state{
+    max-width:1200px;margin:0 auto;padding:60px 24px;text-align:center;
+    color:var(--ink-soft);font-style:italic;font-size:16px;
+  }
+
+  .card{
+    background:var(--card);
+    border:1px solid var(--ink);
+    display:flex;
+    flex-direction:column;
+    position:relative;
+  }
+  .card.featured{
+    grid-column:span 2;
+  }
+  @media (max-width:600px){ .card.featured{grid-column:span 1;} }
+
+  .card-thumb{
+    aspect-ratio:16/10;
+    background:repeating-linear-gradient(45deg,#d8d0bf,#d8d0bf 10px,#cfc6b2 10px,#cfc6b2 20px);
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    text-align:center;
+    overflow:hidden;
+  }
+  .card-thumb img{
+    width:100%;
+    height:100%;
+    object-fit:cover;
+    display:block;
+    filter:sepia(.15) contrast(1.02);
+  }
+  .card-thumb span{
+    font-size:11px;
+    letter-spacing:.06em;
+    color:var(--ink-soft);
+    font-family:"Courier New",monospace;
+    background:var(--cream);
+    padding:4px 8px;
+    border:1px solid var(--ink-soft);
+  }
+  .magnet-badge{
+    display:inline-block;
+    font-size:14px;
+    text-decoration:none;
+    filter:grayscale(.3);
+  }
+  .magnet-badge:hover{filter:none;}
+  .card-body{
+    padding:16px 16px 14px;
+    display:flex;
+    flex-direction:column;
+    flex:1;
+  }
+  .card-cat{
+    font-size:10.5px;
+    letter-spacing:.14em;
+    text-transform:uppercase;
+    color:var(--accent);
+    margin-bottom:8px;
+  }
+  .card-title{
+    font-size:17px;
+    font-weight:700;
+    line-height:1.28;
+    margin:0 0 10px;
+  }
+  .card-title a{color:var(--ink); text-decoration:none;}
+  .card-title a:hover{text-decoration:underline;}
+  .card.featured .card-title{font-size:22px;}
+
+  .card-tags{
+    display:flex;
+    flex-wrap:wrap;
+    gap:6px;
+    margin-bottom:12px;
+  }
+  .card-tags span{
+    font-size:10.5px;
+    font-style:italic;
+    color:var(--ink-soft);
+    border-bottom:1px dotted var(--ink-soft);
+  }
+
+  .card-stats{
+    margin-top:auto;
+    border-top:1px solid #cfc6b2;
+    padding-top:10px;
+    display:grid;
+    grid-template-columns:1fr 1fr;
+    row-gap:6px;
+    font-size:11.5px;
+    color:var(--ink-soft);
+  }
+  .card-stats .lbl{text-transform:uppercase; letter-spacing:.06em; font-size:9.5px;}
+  .card-stats .val{color:var(--ink); font-weight:700;}
+  .seed{color:#2f6b3a !important;}
+  .leech{color:var(--accent) !important;}
+
+  .card-footer{
+    display:flex;
+    justify-content:space-between;
+    font-size:10.5px;
+    color:var(--ink-soft);
+    margin-top:10px;
+    padding-top:8px;
+    border-top:1px dashed #cfc6b2;
+  }
+  .card-footer .uploader{font-style:italic;}
+
+  .pagination{
+    max-width:1200px;margin:0 auto;padding:0 24px 60px;
+    display:flex;justify-content:center;align-items:center;gap:16px;
+    font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:var(--ink-soft);
+  }
+  .pagination a{color:var(--ink);text-decoration:none;border-bottom:1px solid var(--ink);}
+  .pagination a:hover{color:var(--accent);border-color:var(--accent);}
+  .pagination .disabled{color:#cfc6b2;border-bottom:1px solid #cfc6b2;}
+
+  @media (prefers-color-scheme: dark){
+    .card-thumb{background:repeating-linear-gradient(45deg,#2a251d,#2a251d 10px,#332c22 10px,#332c22 20px);}
+    .card-thumb span{background:var(--cream); border-color:var(--ink-soft);}
+    .seed{color:#7fca8d !important;}
+  }
+  :root[data-theme="dark"] .card-thumb{background:repeating-linear-gradient(45deg,#2a251d,#2a251d 10px,#332c22 10px,#332c22 20px);}
+  :root[data-theme="dark"] .card-thumb span{background:var(--cream); border-color:var(--ink-soft);}
+  :root[data-theme="dark"] .seed{color:#7fca8d !important;}
+</style>
+{% endblock %}
+
+{% block content %}
+
+<div class="search-wrap">
+  <form class="search-row" method="get" action="/">
+    <input type="search" name="q" value="{{ q }}" placeholder="Search the archive by title or uploader&hellip;">
+    <button type="submit">Search</button>
+  </form>
+  <div class="filters">
+    <span class="label">Category</span>
+    <a class="chip{{ ' active' if not category }}" href="{{ page_url(category=None, page=1) }}">All</a>
+    {% for c in categories %}
+      <a class="chip{{ ' active' if category == c.category }}"
+         href="{{ page_url(category=None, page=1) if category == c.category else page_url(category=c.category, page=1) }}">{{ c.category }}</a>
+    {% endfor %}
+    {% if tags %}
+    <span class="label" style="margin-left:14px;">Tags</span>
+    {% if tag %}
+      <a class="chip tag active" href="{{ page_url(tag=None, page=1) }}">{{ tag }}</a>
+    {% endif %}
+    {% for t in tags %}
+      {% if t.tag != tag %}
+      <a class="chip tag" href="{{ page_url(tag=t.tag, page=1) }}">{{ t.tag }}</a>
+      {% endif %}
+    {% endfor %}
+    <a class="chip tag" href="/tags">All tags &rarr;</a>
+    {% endif %}
+  </div>
+</div>
+<hr class="rule-thin" style="max-width:1200px;margin:0 auto;">
+
+<div class="result-meta">
+  <span>Showing <strong>{{ start }}&ndash;{{ end }}</strong> of {{ total_fmt }} catalogued entries</span>
+  <form class="sort-form" method="get" action="/">
+    <input type="hidden" name="q" value="{{ q }}">
+    {% if category %}<input type="hidden" name="category" value="{{ category }}">{% endif %}
+    {% if tag %}<input type="hidden" name="tag" value="{{ tag }}">{% endif %}
+    <label>Sorted by
+      <select name="sort" onchange="this.form.submit()">
+        {% for value, label in sort_options.items() %}
+        <option value="{{ value }}"{{ ' selected' if value == sort }}>{{ label }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <noscript><button type="submit">Apply</button></noscript>
+  </form>
+</div>
+
+{% if torrents %}
+<main class="grid">
+  {% for t in torrents %}
+  <article class="card{{ ' featured' if loop.first and page == 1 else '' }}">
+    <div class="card-thumb">
+      {% if t.image_url %}
+        <img src="{{ t.image_url }}" alt="{{ t.title }}">
+      {% else %}
+        <span>No preview</span>
+      {% endif %}
+    </div>
+    <div class="card-body">
+      <div class="card-cat">{{ t.category or 'Uncategorized' }}</div>
+      <h2 class="card-title"><a href="/torrent/{{ t.torrent_id }}">{{ t.title }}</a> <a class="magnet-badge" href="{{ t.magnet }}" title="Magnet link">🧲</a></h2>
+      {% if t.tags %}
+      <div class="card-tags">{% for tg in t.tags %}<span>{{ tg }}</span>{% endfor %}</div>
+      {% endif %}
+      <div class="card-stats">
+        <div><div class="lbl">Size</div><div class="val">{{ t.size_bytes | size }}</div></div>
+        <div><div class="lbl">Added</div><div class="val">{{ t.added_at | date }}</div></div>
+        <div><div class="lbl">Seeders</div><div class="val seed">{{ t.seeders if t.seeders is not none else 0 }}</div></div>
+        <div><div class="lbl">Leechers</div><div class="val leech">{{ t.leechers if t.leechers is not none else 0 }}</div></div>
+      </div>
+      <div class="card-footer">
+        <span class="uploader">by {{ t.uploader or 'Unknown' }}</span>
+        <span>{{ t.downloads if t.downloads is not none else 0 }} downloads</span>
+      </div>
+    </div>
+  </article>
+  {% endfor %}
+</main>
+
+<div class="pagination">
+  {% if page > 1 %}
+    <a href="{{ page_url(page=page-1) }}">&larr; Newer</a>
+  {% else %}
+    <span class="disabled">&larr; Newer</span>
+  {% endif %}
+  <span>Page {{ page }} of {{ total_pages }}</span>
+  {% if page < total_pages %}
+    <a href="{{ page_url(page=page+1) }}">Older &rarr;</a>
+  {% else %}
+    <span class="disabled">Older &rarr;</span>
+  {% endif %}
+</div>
+{% else %}
+<div class="empty-state">No entries match this search.</div>
+{% endif %}
+
+{% endblock %}

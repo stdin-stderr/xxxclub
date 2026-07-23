@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{% block title %}The Torrent Gazette{% endblock %}</title>
+<style>
+  :root{
+    --cream:#f4efe6;
+    --cream-dark:#ece4d3;
+    --ink:#1a1712;
+    --ink-soft:#4a4438;
+    --rule:#1a1712;
+    --accent:#8a2b1f;
+    --card:#fbf8f1;
+    --good:#2f6b3a;
+  }
+  *{box-sizing:border-box;}
+  html,body{margin:0;padding:0;}
+  body{
+    background:var(--cream);
+    color:var(--ink);
+    font-family:"Georgia","Times New Roman",Times,serif;
+    line-height:1.4;
+  }
+  a{color:inherit;}
+  .rule{border:none;border-top:3px double var(--ink);margin:0;}
+  .rule-thin{border:none;border-top:1px solid var(--ink);margin:0;}
+
+  header.masthead{
+    max-width:1200px;
+    margin:0 auto;
+    padding:28px 24px 10px;
+  }
+  .masthead-top{
+    display:flex;
+    justify-content:space-between;
+    align-items:baseline;
+    font-size:11px;
+    letter-spacing:.14em;
+    text-transform:uppercase;
+    color:var(--ink-soft);
+    margin-bottom:14px;
+  }
+  .masthead-title{
+    text-align:center;
+    font-family:Georgia,serif;
+    font-weight:700;
+    font-size:clamp(46px,8vw,88px);
+    letter-spacing:-.01em;
+    margin:0 0 6px;
+  }
+  .masthead-title .amp{color:var(--accent); font-style:italic;}
+  .masthead-sub{
+    text-align:center;
+    font-size:13px;
+    letter-spacing:.24em;
+    text-transform:uppercase;
+    color:var(--ink-soft);
+    margin-bottom:18px;
+  }
+  .breadcrumb{
+    max-width:1100px;margin:0 auto 16px;text-align:center;
+    font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:var(--ink-soft);
+  }
+  .breadcrumb a{text-decoration:none;border-bottom:1px dotted var(--ink-soft);}
+
+  footer{
+    max-width:1200px;
+    margin:0 auto;
+    padding:20px 24px 60px;
+    text-align:center;
+    font-size:11px;
+    letter-spacing:.1em;
+    text-transform:uppercase;
+    color:var(--ink-soft);
+  }
+
+  @media (prefers-color-scheme: dark){
+    :root{
+      --cream:#161310;
+      --cream-dark:#1d1a15;
+      --ink:#ece5d6;
+      --ink-soft:#b8ae99;
+      --rule:#ece5d6;
+      --accent:#d9705a;
+      --card:#1e1a15;
+      --good:#7fca8d;
+    }
+  }
+  :root[data-theme="dark"]{
+    --cream:#161310;
+    --cream-dark:#1d1a15;
+    --ink:#ece5d6;
+    --ink-soft:#b8ae99;
+    --rule:#ece5d6;
+    --accent:#d9705a;
+    --card:#1e1a15;
+    --good:#7fca8d;
+  }
+  :root[data-theme="light"]{
+    --cream:#f4efe6;
+    --ink:#1a1712;
+    --ink-soft:#4a4438;
+    --accent:#8a2b1f;
+    --card:#fbf8f1;
+    --good:#2f6b3a;
+  }
+</style>
+{% block extra_style %}{% endblock %}
+</head>
+<body>
+
+<header class="masthead">
+  <div class="masthead-top">
+    <span>{{ total_all_fmt }} catalogued entries</span>
+    <span>xxxclub.to</span>
+  </div>
+  <h1 class="masthead-title"><span class="amp">XXXClub</span> index</h1>
+  {% block masthead_sub %}{% endblock %}
+</header>
+{% block breadcrumb %}{% endblock %}
+<hr class="rule">
+
+{% block content %}{% endblock %}
+
+<hr class="rule">
+<footer>The Torrent Gazette &mdash; {{ total_all_fmt }} torrents catalogued</footer>
+</body>
+</html>

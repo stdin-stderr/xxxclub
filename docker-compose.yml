@@ -1,0 +1,65 @@
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-xxxclub}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-xxxclub}
+      POSTGRES_DB: ${POSTGRES_DB:-xxxclub}
+    ports:
+      - "${POSTGRES_HOST_PORT:-5432}:5432"
+    volumes:
+      - xxxclub_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-xxxclub}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  scraper:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-xxxclub}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-xxxclub}
+      POSTGRES_DB: ${POSTGRES_DB:-xxxclub}
+      POSTGRES_HOST: db
+      POSTGRES_PORT: 5432
+      BASE_URL: ${BASE_URL:-https://xxxclub.to}
+      SITE_TZ: ${SITE_TZ:-UTC}
+      BACKFILL_DAYS: ${BACKFILL_DAYS:-30}
+      MAX_CONCURRENCY: ${MAX_CONCURRENCY:-2}
+      MAX_CONCURRENCY_CEILING: ${MAX_CONCURRENCY_CEILING:-8}
+      MAX_REQUESTS_PER_SECOND: ${MAX_REQUESTS_PER_SECOND:-1}
+      MAX_REQUESTS_PER_SECOND_CEILING: ${MAX_REQUESTS_PER_SECOND_CEILING:-4}
+      FRONTIER_LOOKAHEAD: ${FRONTIER_LOOKAHEAD:-500}
+      FRONTIER_DRY_STREAK: ${FRONTIER_DRY_STREAK:-200}
+      BACKFILL_CHUNK_SIZE: ${BACKFILL_CHUNK_SIZE:-500}
+      BACKFILL_CONFIRM_WINDOW: ${BACKFILL_CONFIRM_WINDOW:-100}
+      BACKFILL_SAFETY_MARGIN_IDS: ${BACKFILL_SAFETY_MARGIN_IDS:-200}
+      RETRY_BATCH_SIZE: ${RETRY_BATCH_SIZE:-200}
+      REFRESH_BATCH_SIZE: ${REFRESH_BATCH_SIZE:-200}
+      CYCLE_INTERVAL: ${CYCLE_INTERVAL:-60}
+
+  web:
+    build: .
+    restart: unless-stopped
+    command: ["python3", "webapp.py"]
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "${WEB_HOST_PORT:-8080}:8080"
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-xxxclub}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-xxxclub}
+      POSTGRES_DB: ${POSTGRES_DB:-xxxclub}
+      POSTGRES_HOST: db
+      POSTGRES_PORT: 5432
+      WEB_PORT: 8080
+
+volumes:
+  xxxclub_pgdata:

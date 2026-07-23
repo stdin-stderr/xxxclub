@@ -1,0 +1,81 @@
+{% extends "layout.html" %}
+{% block title %}All Tags &mdash; XXXClub Index{% endblock %}
+
+{% block breadcrumb %}
+  <div class="breadcrumb"><a href="/">&larr; Back to the Archive</a> &nbsp;/&nbsp; All Tags</div>
+{% endblock %}
+
+{% block extra_style %}
+<style>
+  .tags-page{
+    max-width:1200px;margin:0 auto;padding:24px 24px 60px;
+    display:flex;flex-wrap:wrap;gap:10px;
+  }
+  .tag-pill{
+    display:flex;align-items:center;gap:8px;
+    font-size:13px;font-style:italic;
+    padding:8px 16px;border:1px dashed var(--ink);border-radius:100px;
+    color:var(--ink);text-decoration:none;
+  }
+  .tag-pill:hover{border-color:var(--accent);color:var(--accent);}
+  .tag-pill .n{
+    font-style:normal;font-family:"Courier New",monospace;font-size:11px;
+    color:var(--ink-soft);background:var(--card);border:1px solid var(--ink-soft);
+    border-radius:100px;padding:1px 8px;
+  }
+  .empty-state{
+    max-width:1200px;margin:0 auto;padding:60px 24px;text-align:center;
+    color:var(--ink-soft);font-style:italic;font-size:16px;
+  }
+  .tags-search{
+    max-width:1200px;margin:0 auto;padding:22px 24px 0;
+  }
+  .tags-search input[type="search"]{
+    width:100%;
+    font-family:Georgia,serif;
+    font-size:19px;
+    font-style:italic;
+    background:transparent;
+    border:none;
+    border-bottom:2px solid var(--ink);
+    padding:10px 4px;
+    color:var(--ink);
+  }
+  .tags-search input[type="search"]::placeholder{color:#9a9282; opacity:1;}
+  .tags-search input[type="search"]:focus{outline:none; border-bottom-color:var(--accent);}
+  .tag-pill.hidden{display:none;}
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="tags-search">
+  <input type="search" id="tag-search" placeholder="Filter tags&hellip;" oninput="filterTags(this.value)">
+</div>
+<div style="max-width:1200px;margin:0 auto;padding:14px 24px 0;font-size:12px;color:var(--ink-soft);">
+  <span id="tags-count">{{ tags | length }} distinct tags</span> across {{ total_all_fmt }} catalogued entries
+</div>
+{% if tags %}
+<div class="tags-page" id="tags-list">
+  {% for t in tags %}
+    <a class="tag-pill" href="/?tag={{ t.tag }}" data-tag="{{ t.tag | lower }}">{{ t.tag }} <span class="n">{{ t.n }}</span></a>
+  {% endfor %}
+</div>
+<div class="empty-state" id="tags-empty" style="display:none;">No tags match your filter.</div>
+<script>
+  var allTags = document.querySelectorAll('#tags-list .tag-pill');
+  function filterTags(query) {
+    var q = query.trim().toLowerCase();
+    var visible = 0;
+    allTags.forEach(function (el) {
+      var match = el.dataset.tag.indexOf(q) !== -1;
+      el.classList.toggle('hidden', !match);
+      if (match) visible++;
+    });
+    document.getElementById('tags-count').textContent = visible + ' distinct tags';
+    document.getElementById('tags-empty').style.display = visible ? 'none' : 'block';
+  }
+</script>
+{% else %}
+<div class="empty-state">No tags catalogued yet.</div>
+{% endif %}
+{% endblock %}
