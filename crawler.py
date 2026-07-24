@@ -78,7 +78,10 @@ class Crawler:
                 return "server_error", None, str(status)
 
             if status != 200:
-                limiter.note_success()
+                # Unexpected status (e.g. 400/410/418): not a 404/redirect we can
+                # classify, but not a block/overload signal either. Feed it into
+                # neither the clean-streak (would wrongly push ramp-up) nor the
+                # breaker (would wrongly trip); just record it as transient.
                 return "parse_error", None, str(status)
 
             if not looks_like_details_page(html):
@@ -120,10 +123,30 @@ class Crawler:
         await db.upsert_id_status(self.pool, torrent_id, status, http_status, next_retry)
         return kind, None
 
-    async def frontier_cycle(self, lookahead: int, batch_concurrency: int):
+    async def frontier_cycle(self, lookahead: int, dry_streak: int, batch_concurrency: int):
         state = await db.get_crawl_state(self.pool)
+        # Fold in successes found by other cycles (e.g. the retry ledger) so the
+        # cap tracks real growth. Without this the frontier would freeze once
+        # dry_streak IDs ahead, never noticing new uploads found off the frontier.
+        highest_success = max(state["highest_success_id"], await db.max_torrent_id(self.pool))
+
         start = state["frontier_scan_high"] + 1
-        end = start + lookahead - 1
+        # Never probe more than dry_streak IDs beyond the newest real torrent:
+        # everything above highest_success is a guaranteed miss until the site
+        # publishes more, so marching further just burns the request budget on
+        # non-existent future IDs. The retry ledger re-checks the frontier_missing
+        # gap every few minutes to catch new uploads.
+        end = min(start + lookahead - 1, highest_success + dry_streak)
+
+        if start > end:
+            if highest_success > state["highest_success_id"]:
+                await db.update_crawl_state(self.pool, highest_success_id=highest_success)
+                await db.reclassify_internal_gaps(self.pool, highest_success)
+            log.info(
+                "frontier dry: scanned to %d (%d past highest_success %d), holding",
+                state["frontier_scan_high"], state["frontier_scan_high"] - highest_success, highest_success,
+            )
+            return
 
         sem = asyncio.Semaphore(batch_concurrency)
 
@@ -134,7 +157,6 @@ class Crawler:
 
         results = await asyncio.gather(*(worker(tid) for tid in range(start, end + 1)))
 
-        highest_success = state["highest_success_id"]
         for tid, kind in results:
             if kind == "success":
                 highest_success = max(highest_success, tid)
@@ -271,7 +293,7 @@ class Crawler:
     async def run_cycle(self):
         cfg = self.config
         await self.retry_due_ledger(cfg["RETRY_BATCH_SIZE"], cfg["MAX_CONCURRENCY"])
-        await self.frontier_cycle(cfg["FRONTIER_LOOKAHEAD"], cfg["MAX_CONCURRENCY"])
+        await self.frontier_cycle(cfg["FRONTIER_LOOKAHEAD"], cfg["FRONTIER_DRY_STREAK"], cfg["MAX_CONCURRENCY"])
         await self.backward_drain_chunk(
             cfg["BACKFILL_CHUNK_SIZE"], cfg["BACKFILL_CONFIRM_WINDOW"], cfg["BACKFILL_SAFETY_MARGIN_IDS"], cfg["MAX_CONCURRENCY"]
         )

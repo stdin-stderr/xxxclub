@@ -23,6 +23,7 @@ class AdaptiveLimiter:
         max_rate: float = 4.0,
         clean_window_requests: int = 50,
         breaker_cooldown_base: float = 30.0,
+        breaker_cooldown_max: float = 900.0,
     ):
         self.min_concurrency = min_concurrency
         self.max_concurrency = max_concurrency
@@ -30,6 +31,7 @@ class AdaptiveLimiter:
         self.max_rate = max_rate
         self.clean_window_requests = clean_window_requests
         self.breaker_cooldown_base = breaker_cooldown_base
+        self.breaker_cooldown_max = breaker_cooldown_max
 
         self._concurrency = min_concurrency
         self._rate = min_rate
@@ -55,7 +57,12 @@ class AdaptiveLimiter:
             self._cond.notify_all()
 
     def _slot_available(self) -> bool:
-        return self._inflight < self._concurrency and time.monotonic() >= self._tripped_until
+        # Only gate on concurrency here. The breaker cooldown is enforced in
+        # _consume_token(), which sleeps until _tripped_until passes. Gating the
+        # condition on _tripped_until too would deadlock: nothing notifies waiters
+        # when the cooldown expires, so a trip with no in-flight request (e.g. at
+        # concurrency=1) would leave the next acquirer parked forever.
+        return self._inflight < self._concurrency
 
     async def _consume_token(self) -> None:
         while True:
@@ -97,8 +104,17 @@ class AdaptiveLimiter:
         self._trip_count += 1
         self._concurrency = self.min_concurrency
         self._rate = self.min_rate
-        cooldown = retry_after if retry_after is not None else self.breaker_cooldown_base * (2 ** (self._trip_count - 1))
-        cooldown = min(cooldown, 3600.0)
+        if retry_after is not None:
+            # Server told us explicitly how long to wait; honour it.
+            cooldown = retry_after
+        else:
+            # Exponential self-backoff, but capped at breaker_cooldown_max (15 min)
+            # so we always re-check within that window instead of drifting toward
+            # an hour. A soft-404 above the frontier keeps tripping otherwise.
+            cooldown = min(
+                self.breaker_cooldown_base * (2 ** (self._trip_count - 1)),
+                self.breaker_cooldown_max,
+            )
         self._tripped_until = max(self._tripped_until, time.monotonic() + cooldown)
         log.warning(
             "circuit breaker tripped (count=%d), cooldown=%.1fs, concurrency/rate reset to floor",

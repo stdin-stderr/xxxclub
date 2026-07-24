@@ -279,10 +279,11 @@ async def upsert_torrent(pool: asyncpg.Pool, data: dict) -> None:
             v = json.dumps(v)
         values.append(v)
     async with pool.acquire() as conn:
-        await conn.execute(sql, *values)
-        await conn.execute(
-            "DELETE FROM id_status WHERE torrent_id = $1", data["torrent_id"]
-        )
+        async with conn.transaction():
+            await conn.execute(sql, *values)
+            await conn.execute(
+                "DELETE FROM id_status WHERE torrent_id = $1", data["torrent_id"]
+            )
 
 
 async def upsert_id_status(
@@ -320,6 +321,16 @@ async def reclassify_internal_gaps(pool: asyncpg.Pool, highest_success_id: int) 
 async def get_crawl_state(pool: asyncpg.Pool) -> asyncpg.Record:
     async with pool.acquire() as conn:
         return await conn.fetchrow("SELECT * FROM crawl_state WHERE id = 1")
+
+
+async def max_torrent_id(pool: asyncpg.Pool) -> int:
+    """Highest successfully-stored torrent_id (PK scan, cheap). 0 when empty.
+
+    Used by the frontier to bound how far it probes ahead: successes found by the
+    retry ledger (not just frontier_cycle) are reflected here, so the frontier cap
+    tracks real growth without a per-request crawl_state write."""
+    async with pool.acquire() as conn:
+        return await conn.fetchval("SELECT COALESCE(max(torrent_id), 0) FROM torrents")
 
 
 async def update_crawl_state(pool: asyncpg.Pool, **fields) -> None:
@@ -1263,7 +1274,12 @@ async def confirm_window_all_old(
     pool: asyncpg.Pool, floor_id: int, window: int, cutoff_at
 ) -> tuple[bool, int]:
     """Among torrents rows in [floor_id, floor_id+window-1], are all dated ones older than cutoff?
-    Returns (all_old_and_at_least_one_dated, dated_count)."""
+    Returns (all_old_and_at_least_one_dated_and_no_pending_holes, dated_count).
+
+    A window is only "confirmed old" if it has no unresolved id_status entries
+    (transient_error/parse_error) still awaiting a retry: those could yet turn
+    into a torrent newer than the cutoff, so completing the backfill while they
+    are outstanding could stop the backward walk prematurely."""
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
             """
@@ -1277,6 +1293,15 @@ async def confirm_window_all_old(
             window,
             cutoff_at,
         )
+        pending_holes = await conn.fetchval(
+            """
+            SELECT count(*) FROM id_status
+            WHERE torrent_id BETWEEN $1 AND $1 + $2 - 1
+              AND status IN ('transient_error', 'parse_error')
+            """,
+            floor_id,
+            window,
+        )
     dated_count = row["dated_count"] or 0
     all_old = row["all_old"]
-    return bool(dated_count > 0 and all_old), dated_count
+    return bool(dated_count > 0 and all_old and not pending_holes), dated_count

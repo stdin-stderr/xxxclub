@@ -42,6 +42,8 @@ def format_size(n) -> str:
 
 
 def format_duration(seconds) -> str:
+    if seconds is None:
+        return "—"
     total_seconds = int(seconds)
     hours, remainder = divmod(total_seconds, 3600)
     minutes, seconds = divmod(remainder, 60)
