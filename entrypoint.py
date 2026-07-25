@@ -6,6 +6,7 @@ import asyncio
 import logging
 import os
 import sys
+from urllib.parse import quote_plus
 
 import aiohttp
 
@@ -63,8 +64,10 @@ def log_config(cfg: dict) -> None:
 
 
 def dsn(cfg: dict) -> str:
+    user = quote_plus(cfg['POSTGRES_USER'])
+    password = quote_plus(cfg['POSTGRES_PASSWORD'])
     return (
-        f"postgresql://{cfg['POSTGRES_USER']}:{cfg['POSTGRES_PASSWORD']}"
+        f"postgresql://{user}:{password}"
         f"@{cfg['POSTGRES_HOST']}:{cfg['POSTGRES_PORT']}/{cfg['POSTGRES_DB']}"
     )
 
@@ -74,20 +77,23 @@ async def main():
     log_config(cfg)
 
     pool = await db.create_pool(dsn(cfg))
-    await db.init_schema(pool)
-    log.info("schema ready")
+    try:
+        await db.init_schema(pool)
+        log.info("schema ready")
 
-    limiter = AdaptiveLimiter(
-        min_concurrency=cfg["MAX_CONCURRENCY"],
-        max_concurrency=cfg["MAX_CONCURRENCY_CEILING"],
-        min_rate=cfg["MAX_REQUESTS_PER_SECOND"],
-        max_rate=cfg["MAX_REQUESTS_PER_SECOND_CEILING"],
-    )
+        limiter = AdaptiveLimiter(
+            min_concurrency=cfg["MAX_CONCURRENCY"],
+            max_concurrency=cfg["MAX_CONCURRENCY_CEILING"],
+            min_rate=cfg["MAX_REQUESTS_PER_SECOND"],
+            max_rate=cfg["MAX_REQUESTS_PER_SECOND_CEILING"],
+        )
 
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
-    async with aiohttp.ClientSession(headers=headers) as session:
-        crawler = Crawler(cfg, pool, session, limiter)
-        await crawler.run_forever()
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+        async with aiohttp.ClientSession(headers=headers) as session:
+            crawler = Crawler(cfg, pool, session, limiter)
+            await crawler.run_forever()
+    finally:
+        await pool.close()
 
 
 if __name__ == "__main__":

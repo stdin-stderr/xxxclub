@@ -241,7 +241,7 @@ class Crawler:
         async def worker(row):
             async with sem:
                 kind, data = await self.resolve_id(row["torrent_id"], gap_relative_to_highest=True)
-                if kind != "success":
+                if kind not in ("success", "not_found", "redirect"):
                     await db.bump_next_refresh(
                         self.pool, row["torrent_id"], datetime.now(timezone.utc) + timedelta(hours=6)
                     )

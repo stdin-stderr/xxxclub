@@ -1186,17 +1186,14 @@ async def get_catalog_detail(pool: asyncpg.Pool, entity: str, entity_id) -> dict
                 """,
                 entity_id,
             )
-            relation_column = "site_id"
         elif entity == "networks":
             row = await conn.fetchrow(
                 "SELECT * FROM tpdb_networks WHERE network_id = $1", entity_id
             )
-            relation_column = None
         elif entity == "performers":
             row = await conn.fetchrow(
                 "SELECT * FROM tpdb_performers WHERE performer_id = $1", entity_id
             )
-            relation_column = None
         else:
             raise KeyError(entity)
 

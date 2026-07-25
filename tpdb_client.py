@@ -1,6 +1,7 @@
 """Small TPDB client and response mapper for filename-based scene matching."""
 
 import asyncio
+import functools
 import re
 import time
 import uuid
@@ -233,6 +234,7 @@ def build_match_source(filename: str, torrent_title: str) -> MatchSource:
     )
 
 
+@functools.lru_cache(maxsize=1024)
 def _normalise_name(value: str | None) -> str:
     return "".join(_TOKEN_RE.findall((value or "").lower()))
 

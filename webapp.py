@@ -9,7 +9,7 @@ import os
 import sys
 import uuid
 from pathlib import Path
-from urllib.parse import urlencode
+from urllib.parse import quote_plus, urlencode
 
 import jinja2
 from aiohttp import web
@@ -148,7 +148,7 @@ async def archive_handler(request: web.Request) -> web.Response:
         params = {"q": q, "category": category, "tag": tag, "sort": sort, "page": page}
         params.update(overrides)
         params = {k: v for k, v in params.items() if v}
-        query = "&".join(f"{k}={v}" for k, v in params.items())
+        query = urlencode(params)
         return f"/torrents/?{query}" if query else "/torrents/"
 
     return render(
@@ -273,9 +273,11 @@ async def scenes_redirect_handler(request: web.Request) -> web.Response:
 
 
 def dsn_from_env() -> str:
+    user = quote_plus(os.environ.get('POSTGRES_USER', 'xxxclub'))
+    password = quote_plus(os.environ.get('POSTGRES_PASSWORD', 'xxxclub'))
     return (
-        f"postgresql://{os.environ.get('POSTGRES_USER', 'xxxclub')}:"
-        f"{os.environ.get('POSTGRES_PASSWORD', 'xxxclub')}"
+        f"postgresql://{user}:"
+        f"{password}"
         f"@{os.environ.get('POSTGRES_HOST', 'db')}:{os.environ.get('POSTGRES_PORT', '5432')}"
         f"/{os.environ.get('POSTGRES_DB', 'xxxclub')}"
     )

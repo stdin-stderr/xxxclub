@@ -1,9 +1,11 @@
 """Fetch + parse a single /torrents/details/{id} page. See PLAN.md field inventory / Data model."""
 
+import email.utils
 import re
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
+from aiohttp import ClientTimeout
 from bs4 import BeautifulSoup
 
 SIZE_UNITS = {"B": 1, "KB": 1024, "MB": 1024**2, "GB": 1024**3, "TB": 1024**4}
@@ -152,7 +154,7 @@ def parse_details_html(html: str, torrent_id: int, tz_name: str = "UTC") -> dict
     info_hash = info_hash_match.group(1).lower() if info_hash_match else torrent_download_hash
 
     poster = detailsdiv.select_one("img.detailsposter")
-    image_url = poster["src"] if poster else None
+    image_url = poster.get("src") if poster else None
 
     likes = dislikes = 0
     rating = detailsdiv.select_one(".rating-system")
@@ -246,10 +248,19 @@ def looks_like_details_page(html: str) -> bool:
 async def fetch_details(session, base_url: str, torrent_id: int, timeout: float = 15.0):
     """Returns (status, html_or_none, redirect_location_or_none, retry_after_seconds_or_none)."""
     url = f"{base_url}/torrents/details/{torrent_id}"
-    async with session.get(url, allow_redirects=False, timeout=timeout) as resp:
+    async with session.get(url, allow_redirects=False, timeout=ClientTimeout(total=timeout)) as resp:
         status = resp.status
         retry_after = resp.headers.get("Retry-After")
-        retry_after_seconds = float(retry_after) if retry_after and retry_after.isdigit() else None
+        retry_after_seconds = None
+        if retry_after:
+            try:
+                retry_after_seconds = float(retry_after)
+            except ValueError:
+                try:
+                    retry_dt = email.utils.parsedate_to_datetime(retry_after)
+                    retry_after_seconds = (retry_dt - datetime.now(timezone.utc)).total_seconds()
+                except (ValueError, TypeError):
+                    retry_after_seconds = None
         if status in (301, 302, 303, 307, 308):
             return status, None, resp.headers.get("Location"), retry_after_seconds
         text = await resp.text()

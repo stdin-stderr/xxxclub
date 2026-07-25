@@ -7,6 +7,7 @@ import logging
 import os
 import sys
 from datetime import datetime, timedelta, timezone
+from urllib.parse import quote_plus
 
 import aiohttp
 
@@ -30,9 +31,11 @@ log = logging.getLogger("tpdb_matcher")
 
 
 def dsn_from_env() -> str:
+    user = quote_plus(os.environ.get('POSTGRES_USER', 'xxxclub'))
+    password = quote_plus(os.environ.get('POSTGRES_PASSWORD', 'xxxclub'))
     return (
-        f"postgresql://{os.environ.get('POSTGRES_USER', 'xxxclub')}:"
-        f"{os.environ.get('POSTGRES_PASSWORD', 'xxxclub')}"
+        f"postgresql://{user}:"
+        f"{password}"
         f"@{os.environ.get('POSTGRES_HOST', 'db')}:{os.environ.get('POSTGRES_PORT', '5432')}"
         f"/{os.environ.get('POSTGRES_DB', 'xxxclub')}"
     )
@@ -91,7 +94,7 @@ async def search_with_fallbacks(client: TPDBClient, source, filename: str) -> di
 
     sites, _ = await client.search_sites(source.site_label)
     site = select_site(sites, source.site_label)
-    if site and site.get("id"):
+    if site is not None and site.get("id") is not None:
         candidates, _ = await client.site_scenes(int(site["id"]))
         inspected += len(candidates)
         decision = choose_candidate(candidates, source, expected_site=site)

@@ -25,7 +25,7 @@ FAILURE_STATUSES = {403, 429, 500, 502, 503, 504}
 
 async def run_step(session, base_url, id_cycle, concurrency, rate, hold_seconds):
     sem = asyncio.Semaphore(concurrency)
-    interval = 1.0 / rate
+    interval = concurrency / rate
     stop_at = time.monotonic() + hold_seconds
     ok = 0
     failures = []

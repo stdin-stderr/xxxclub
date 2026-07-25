@@ -44,6 +44,7 @@ class AdaptiveLimiter:
         self._tripped_until = 0.0
         self._trip_count = 0
         self._clean_streak = 0
+        self._token_lock = asyncio.Lock()
 
     async def acquire(self) -> None:
         async with self._cond:
@@ -66,17 +67,23 @@ class AdaptiveLimiter:
 
     async def _consume_token(self) -> None:
         while True:
-            now = time.monotonic()
+            async with self._token_lock:
+                now = time.monotonic()
+                if now < self._tripped_until:
+                    # Need to sleep outside the lock so other waiters can proceed
+                    pass
+                else:
+                    elapsed = now - self._last_refill
+                    self._tokens = min(self._rate, self._tokens + elapsed * self._rate)
+                    self._last_refill = now
+                    if self._tokens >= 1:
+                        self._tokens -= 1
+                        return
+            # Sleep outside the lock, then retry loop
             if now < self._tripped_until:
                 await asyncio.sleep(self._tripped_until - now)
-                continue
-            elapsed = now - self._last_refill
-            self._tokens = min(self._rate, self._tokens + elapsed * self._rate)
-            self._last_refill = now
-            if self._tokens >= 1:
-                self._tokens -= 1
-                return
-            await asyncio.sleep(max((1 - self._tokens) / self._rate, 0.01))
+            else:
+                await asyncio.sleep(max((1 - self._tokens) / self._rate, 0.01))
 
     def note_success(self) -> None:
         self._clean_streak += 1
