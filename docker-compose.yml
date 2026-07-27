@@ -1,22 +1,25 @@
 x-xxxclub-image: &xxxclub-image
-  image: ${XXXCLUB_IMAGE:-xxxclub:local}
+  image: xxxclub:local
   build:
     context: .
+  env_file:
+    - path: .env
+      required: false
 
 services:
   db:
     image: postgres:16-alpine
     restart: unless-stopped
     environment:
-      POSTGRES_USER: ${POSTGRES_USER:-xxxclub}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-xxxclub}
-      POSTGRES_DB: ${POSTGRES_DB:-xxxclub}
+      POSTGRES_USER: xxxclub
+      POSTGRES_PASSWORD: xxxclub
+      POSTGRES_DB: xxxclub
     ports:
-      - "${POSTGRES_HOST_PORT:-5432}:5432"
+      - "5432:5432"
     volumes:
       - xxxclub_pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-xxxclub}"]
+      test: ["CMD-SHELL", "pg_isready -U xxxclub"]
       interval: 5s
       timeout: 5s
       retries: 10
@@ -29,25 +32,8 @@ services:
       db:
         condition: service_healthy
     environment:
-      POSTGRES_USER: ${POSTGRES_USER:-xxxclub}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-xxxclub}
-      POSTGRES_DB: ${POSTGRES_DB:-xxxclub}
       POSTGRES_HOST: db
       POSTGRES_PORT: 5432
-      BASE_URLS: ${BASE_URLS:-https://xxxclub.to}
-      REQUESTS_PER_SECOND_PER_DOMAIN: ${REQUESTS_PER_SECOND_PER_DOMAIN:-1}
-      BLOCK_COOLDOWN_SECONDS: ${BLOCK_COOLDOWN_SECONDS:-60}
-      REQUEST_TIMEOUT_SECONDS: ${REQUEST_TIMEOUT_SECONDS:-15}
-      SITE_TZ: ${SITE_TZ:-UTC}
-      BACKFILL_DAYS: ${BACKFILL_DAYS:-30}
-      FRONTIER_LOOKAHEAD: ${FRONTIER_LOOKAHEAD:-500}
-      FRONTIER_DRY_STREAK: ${FRONTIER_DRY_STREAK:-200}
-      BACKFILL_CHUNK_SIZE: ${BACKFILL_CHUNK_SIZE:-500}
-      BACKFILL_CONFIRM_WINDOW: ${BACKFILL_CONFIRM_WINDOW:-100}
-      BACKFILL_SAFETY_MARGIN_IDS: ${BACKFILL_SAFETY_MARGIN_IDS:-200}
-      RETRY_BATCH_SIZE: ${RETRY_BATCH_SIZE:-200}
-      REFRESH_BATCH_SIZE: ${REFRESH_BATCH_SIZE:-200}
-      CYCLE_INTERVAL: ${CYCLE_INTERVAL:-60}
 
   web:
     <<: *xxxclub-image
@@ -57,18 +43,14 @@ services:
       db:
         condition: service_healthy
     ports:
-      - "${WEB_HOST_PORT:-8080}:8080"
+      - "5000:5000"
     volumes:
       - ./db.py:/app/db.py
       - ./webapp.py:/app/webapp.py
       - ./web:/app/web
     environment:
-      POSTGRES_USER: ${POSTGRES_USER:-xxxclub}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-xxxclub}
-      POSTGRES_DB: ${POSTGRES_DB:-xxxclub}
       POSTGRES_HOST: db
       POSTGRES_PORT: 5432
-      WEB_PORT: 8080
 
   tpdb-matcher:
     <<: *xxxclub-image
@@ -78,15 +60,10 @@ services:
       db:
         condition: service_healthy
     environment:
-      POSTGRES_USER: ${POSTGRES_USER:-xxxclub}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-xxxclub}
-      POSTGRES_DB: ${POSTGRES_DB:-xxxclub}
       POSTGRES_HOST: db
       POSTGRES_PORT: 5432
-      THEPORNDB_API_KEY: ${THEPORNDB_API_KEY}
-      TPDB_REQUESTS_PER_SECOND: ${TPDB_REQUESTS_PER_SECOND:-1}
-      TPDB_BATCH_SIZE: ${TPDB_BATCH_SIZE:-25}
-      TPDB_CYCLE_INTERVAL: ${TPDB_CYCLE_INTERVAL:-60}
+      # THEPORNDB_API_KEY=yourkeyhere
+      THEPORNDB_API_KEY: ${THEPORNDB_API_KEY:-}
 
 volumes:
   xxxclub_pgdata:

@@ -349,6 +349,6 @@ async def make_app() -> web.Application:
 
 
 if __name__ == "__main__":
-    port = int(os.environ.get("WEB_PORT", "8080"))
+    port = int(os.environ.get("WEB_PORT", "5000"))
     log.info("starting web UI on port %d", port)
     web.run_app(make_app(), host="0.0.0.0", port=port)
