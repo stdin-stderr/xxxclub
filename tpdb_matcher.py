@@ -71,6 +71,23 @@ def _annotate_audit(audit: list[dict], method: str, query: str | None) -> list[d
     ]
 
 
+def _audit_for_storage(audit: list[dict], limit: int = 25) -> list[dict]:
+    """Keep chronological audit order while guaranteeing the selected row survives."""
+
+    stored = audit[:limit]
+    selected = next((item for item in audit if item.get("selected")), None)
+    if selected is not None and selected not in stored:
+        if stored:
+            stored[-1] = selected
+        else:
+            stored.append(selected)
+    return stored
+
+
+def _log_dry_run(payload: dict) -> None:
+    log.info("dry-run result %s", json.dumps(payload, sort_keys=True, default=str))
+
+
 async def search_with_fallbacks(client: TPDBClient, source, filename: str) -> dict:
     inspected = 0
     audit = []
@@ -148,6 +165,14 @@ async def search_with_fallbacks(client: TPDBClient, source, filename: str) -> di
 async def match_one(pool, client: TPDBClient, row, *, dry_run: bool = False) -> str:
     selected = largest_file(decode_files(row["files"]))
     if selected is None:
+        if dry_run:
+            _log_dry_run(
+                {
+                    "status": "no_file",
+                    "torrent_id": row["torrent_id"],
+                    "reason": "torrent has no usable file entry",
+                }
+            )
         if not dry_run:
             await db.record_tpdb_match_outcome(
                 pool,
@@ -161,7 +186,7 @@ async def match_one(pool, client: TPDBClient, row, *, dry_run: bool = False) -> 
         return "no_file"
 
     filename, size_bytes = selected
-    source = build_match_source(filename, row["title"])
+    source = build_match_source(filename, row["title"], row["category"])
     try:
         reusable = await db.find_reusable_tpdb_match(
             pool,
@@ -170,11 +195,16 @@ async def match_one(pool, client: TPDBClient, row, *, dry_run: bool = False) -> 
         )
         if reusable:
             if dry_run:
-                log.info(
-                    "dry-run reusable torrent %s -> scene %s from torrent %s",
-                    row["torrent_id"],
-                    reusable["scene_id"],
-                    reusable["source_torrent_id"],
+                _log_dry_run(
+                    {
+                        "status": "matched",
+                        "torrent_id": row["torrent_id"],
+                        "filename": filename,
+                        "scene_id": reusable["scene_id"],
+                        "method": "resolution_sibling",
+                        "source_torrent_id": reusable["source_torrent_id"],
+                        "score": float(reusable["match_score"]),
+                    }
                 )
             else:
                 await db.save_reused_tpdb_match(
@@ -185,17 +215,23 @@ async def match_one(pool, client: TPDBClient, row, *, dry_run: bool = False) -> 
                     file_size_bytes=size_bytes,
                     scene_key=source.scene_key,
                     source_torrent_id=reusable["source_torrent_id"],
+                    match_score=reusable["match_score"],
                 )
             return "matched"
 
         result = await search_with_fallbacks(client, source, filename)
         if result["candidate"] is None:
             if dry_run:
-                log.info(
-                    "dry-run unmatched torrent %s (%s): %s",
-                    row["torrent_id"],
-                    filename,
-                    result["reason"],
+                _log_dry_run(
+                    {
+                        "status": "unmatched",
+                        "torrent_id": row["torrent_id"],
+                        "filename": filename,
+                        "method": result["method"],
+                        "score": result["score"],
+                        "candidate_count": result["candidate_count"],
+                        "reason": result["reason"],
+                    }
                 )
                 return "unmatched"
             await db.record_tpdb_match_outcome(
@@ -212,19 +248,24 @@ async def match_one(pool, client: TPDBClient, row, *, dry_run: bool = False) -> 
                 scene_key=source.scene_key,
                 search_query=result["query"],
                 match_score=result["score"],
-                candidate_metadata=result["audit"][:25],
+                candidate_metadata=_audit_for_storage(result["audit"]),
             )
             return "unmatched"
 
         bundle = map_scene_record(result["candidate"])
         if dry_run:
-            log.info(
-                "dry-run match torrent %s (%s) -> %s via %s score=%.3f",
-                row["torrent_id"],
-                filename,
-                bundle["scene"]["title"],
-                result["method"],
-                result["score"],
+            _log_dry_run(
+                {
+                    "status": "matched",
+                    "torrent_id": row["torrent_id"],
+                    "filename": filename,
+                    "scene_id": bundle["scene"]["scene_id"],
+                    "scene_title": bundle["scene"]["title"],
+                    "method": result["method"],
+                    "score": result["score"],
+                    "candidate_count": result["candidate_count"],
+                    "reason": result["reason"],
+                }
             )
         else:
             await db.save_tpdb_match(
@@ -238,7 +279,7 @@ async def match_one(pool, client: TPDBClient, row, *, dry_run: bool = False) -> 
                 scene_key=source.scene_key,
                 search_query=result["query"],
                 match_score=result["score"],
-                candidate_metadata=result["audit"][:25],
+                candidate_metadata=_audit_for_storage(result["audit"]),
             )
         if not dry_run:
             log.info(
@@ -255,6 +296,16 @@ async def match_one(pool, client: TPDBClient, row, *, dry_run: bool = False) -> 
         retry_delay = timedelta(hours=1)
         if status == 429:
             retry_delay = timedelta(minutes=15)
+        if dry_run:
+            _log_dry_run(
+                {
+                    "status": "error",
+                    "torrent_id": row["torrent_id"],
+                    "filename": filename,
+                    "http_status": status,
+                    "reason": str(exc),
+                }
+            )
         if not dry_run:
             await db.record_tpdb_match_outcome(
                 pool,
@@ -288,17 +339,35 @@ async def log_stats(pool) -> None:
     )
 
 
-async def run(run_once: bool = False, dry_run: bool = False) -> None:
+async def run(
+    run_once: bool = False,
+    dry_run: bool = False,
+    *,
+    limit: int | None = None,
+    torrent_ids: list[int] | None = None,
+) -> None:
     api_key = os.environ.get("THEPORNDB_API_KEY", "").strip()
     if not api_key:
         raise RuntimeError("THEPORNDB_API_KEY is required")
 
-    batch_size = int(os.environ.get("TPDB_BATCH_SIZE", "25"))
+    batch_size = (
+        limit
+        or (len(torrent_ids) if torrent_ids else 0)
+        or int(os.environ.get("TPDB_BATCH_SIZE", "25"))
+    )
     cycle_interval = int(os.environ.get("TPDB_CYCLE_INTERVAL", "60"))
     rate = float(os.environ.get("TPDB_REQUESTS_PER_SECOND", "1"))
 
     pool = await db.create_pool(dsn_from_env())
     await db.init_schema(pool)
+    if not dry_run:
+        migration = await db.migrate_tpdb_matcher_v2(pool)
+        log.info(
+            "TPDB matcher V2 data migration: "
+            "legacy_deleted=%d siblings_backfilled=%d",
+            migration["legacy_deleted"],
+            migration["siblings_backfilled"],
+        )
     log.info(
         "schema ready; matching categories=%s at %.2f request(s)/second",
         ", ".join(db.TPDB_CATEGORIES),
@@ -311,7 +380,11 @@ async def run(run_once: bool = False, dry_run: bool = False) -> None:
             client = TPDBClient(session, api_key, rate)
             while True:
                 rows = (
-                    await db.fetch_tpdb_shadow_candidates(pool, batch_size)
+                    await db.fetch_tpdb_shadow_candidates(
+                        pool,
+                        batch_size,
+                        torrent_ids=torrent_ids,
+                    )
                     if dry_run
                     else await db.fetch_tpdb_match_candidates(pool, batch_size)
                 )
@@ -346,5 +419,27 @@ if __name__ == "__main__":
         action="store_true",
         help="evaluate one batch without persisting match outcomes",
     )
+    parser.add_argument(
+        "--limit",
+        type=int,
+        help="override TPDB_BATCH_SIZE (especially useful for one-pass dry runs)",
+    )
+    parser.add_argument(
+        "--torrent-ids",
+        type=int,
+        nargs="+",
+        help="evaluate only these torrent IDs (requires --dry-run)",
+    )
     args = parser.parse_args()
-    asyncio.run(run(run_once=args.once, dry_run=args.dry_run))
+    if args.limit is not None and args.limit < 1:
+        parser.error("--limit must be at least 1")
+    if args.torrent_ids and not args.dry_run:
+        parser.error("--torrent-ids requires --dry-run")
+    asyncio.run(
+        run(
+            run_once=args.once,
+            dry_run=args.dry_run,
+            limit=args.limit,
+            torrent_ids=args.torrent_ids,
+        )
+    )

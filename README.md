@@ -41,3 +41,7 @@ fallbacks. Candidates are scored from site, release date, title, and performer
 evidence; ambiguous results remain unmatched and are retried with backoff.
 `python3 tpdb_matcher.py --dry-run --once` evaluates one batch without persisting
 match outcomes.
+
+Use `--limit N` for a larger one-pass shadow evaluation, or
+`--torrent-ids ID [ID ...]` to evaluate an explicit set without repeatedly
+fetching the same first batch. Dry-run results are logged as structured JSON.

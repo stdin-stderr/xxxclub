@@ -75,6 +75,42 @@ class MatchSourceTests(unittest.TestCase):
             any("seduces married boss" in query for query in source.queries)
         )
 
+    def test_episode_tokens_and_generic_release_groups_are_removed(self):
+        source = build_match_source(
+            "site.26.07.22.performer.scene123.e004.vaccine.title.mp4",
+            "Site 26 07 22 Performer Episode12 Vaccine Title 1080p",
+        )
+        self.assertNotIn("scene123", source.tokens)
+        self.assertNotIn("e004", source.tokens)
+        self.assertNotIn("episode12", source.tokens)
+        self.assertNotIn("vaccine", source.tokens)
+        self.assertIn("performer", source.tokens)
+        self.assertIn("title", source.tokens)
+
+    def test_camel_case_is_split_only_for_match_source_tokens(self):
+        filename = "site.26.07.22.RosiVelez.TheLatinaNextDoor.mp4"
+        source = build_match_source(
+            filename,
+            "Site 26 07 22 RosiVelez TheLatinaNextDoor 1080p",
+        )
+        self.assertTrue({"rosi", "velez", "latina", "next", "door"} <= source.tokens)
+        self.assertIn("rosivelez", scene_key(filename))
+
+    def test_vr_noise_is_scoped_to_vr_sources(self):
+        filename = "site.26.07.22.performer.180.lr.tb.vr180.4096p.title.mp4"
+        vr_source = build_match_source(
+            filename,
+            "Site 26 07 22 Performer 180 LR TB VR180 4096p Title",
+            "VR/VirtualReality",
+        )
+        standard_source = build_match_source(
+            filename,
+            "Site 26 07 22 Performer 180 LR TB VR180 4096p Title",
+            "2160p/UHD/4K",
+        )
+        self.assertFalse({"180", "lr", "tb", "vr180", "4096p"} & vr_source.tokens)
+        self.assertTrue({"180", "lr", "tb", "vr180", "4096p"} <= standard_source.tokens)
+
 
 class CandidateScoringTests(unittest.TestCase):
     def setUp(self):
@@ -127,6 +163,71 @@ class CandidateScoringTests(unittest.TestCase):
         ]
         decision = choose_candidate(candidates, self.source)
         self.assertTrue(decision.accepted)
+
+    def test_ambiguity_only_compares_individually_accepted_candidates(self):
+        source = build_match_source(
+            "narcos-fpv-23-07-03-baby-kitten-wakey-blinders-in-birmingham-"
+            "vr180-4096p.mp4",
+            "FuckPassVR 23 07 03 Baby Kitten Wakey Blinders in Birmingham "
+            "XXX VR180 4096p MP4-Narcos [XC]",
+            "VR/VirtualReality",
+        )
+        candidates = [
+            {
+                "id": "bf1607cb-6244-40eb-8154-f6127369ed50",
+                "title": "Wakey Blinders in Birmingham",
+                "date": "2023-08-21",
+                "site": {"name": "FuckPassVR"},
+            },
+            {
+                "id": "ff57e7ff-3928-451d-a594-3fb8a1cc3035",
+                "title": "Wakey Blinders in Birmingham",
+                "date": "2023-06-23",
+                "site": {"name": "FuckPassVR"},
+            },
+            {
+                "id": "836f0b50-ac27-4524-bdfe-87b00998e862",
+                "title": "Reload 6on1 Double Anal Gang Bang, Baby Kitten ATM",
+                "date": "2026-07-01",
+                "site": {"name": "Giorgio Grandi"},
+            },
+            {
+                "id": "86b8447f-6706-49da-804c-c607630cf2da",
+                "title": "Behind the Pissing Scenes #189, Baby Kxtten",
+                "date": "2024-02-05",
+                "site": {"name": "XFREAXX"},
+            },
+            {
+                "id": "b0e8a11a-e881-4571-8fbb-0553b25f171a",
+                "title": "Baby Kxtten - Wunf 367",
+                "date": "2022-10-18",
+                "site": {"name": "Wake Up N Fuck"},
+            },
+        ]
+        decision = choose_candidate(candidates, source)
+        self.assertTrue(decision.accepted)
+        self.assertEqual(
+            decision.candidate["id"],
+            "ff57e7ff-3928-451d-a594-3fb8a1cc3035",
+        )
+        selected = [item for item in decision.audit if item.get("selected")]
+        self.assertEqual([item["id"] for item in selected], [decision.candidate["id"]])
+
+    def test_two_individually_accepted_ties_remain_ambiguous(self):
+        candidates = [
+            {
+                "id": f"scene-{index}",
+                "title": f"Stella Nash Sister Crush Part {index}",
+                "date": "2026-07-22",
+                "site": {"id": 258, "name": "Jay's POV"},
+                "performers": [{"name": "Stella Nash"}],
+            }
+            for index in (1, 2)
+        ]
+        decision = choose_candidate(candidates, self.source)
+        self.assertFalse(decision.accepted)
+        self.assertIn("ambiguous top candidates", decision.reason)
+        self.assertFalse(any(item.get("selected") for item in decision.audit))
 
     def test_site_selection_requires_an_exact_alias_when_search_is_ambiguous(self):
         sites = [

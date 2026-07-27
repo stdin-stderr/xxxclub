@@ -32,6 +32,8 @@ _SCENE_KEY_NOISE_RE = re.compile(
     re.I,
 )
 _TOKEN_RE = re.compile(r"[a-z0-9]+")
+_CAMEL_CASE_BOUNDARY_RE = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
+_EPISODE_TOKEN_RE = re.compile(r"^(?:e\d{1,4}|episode\d{1,4}|scene\d{1,4})$", re.I)
 _MATCH_NOISE = {
     "a",
     "aka",
@@ -76,6 +78,28 @@ _MATCH_NOISE = {
     "1080p",
     "2160p",
     "4k",
+    "fpv",
+    "gapfill",
+    "narcos",
+    "vaccine",
+    "vsex",
+}
+_VR_NOISE = {
+    "4096",
+    "4096p",
+    "3072",
+    "3072p",
+    "3600",
+    "3600p",
+    "2048",
+    "2048p",
+    "180",
+    "360",
+    "vr180",
+    "vr360",
+    "3dh",
+    "lr",
+    "tb",
 }
 
 
@@ -149,11 +173,14 @@ def scene_key(filename: str) -> str:
     return ".".join(_TOKEN_RE.findall(basename))
 
 
-def _tokens(value: str) -> frozenset[str]:
+def _tokens(value: str, extra_noise: frozenset[str] = frozenset()) -> frozenset[str]:
     return frozenset(
         token
         for token in _TOKEN_RE.findall((value or "").lower())
-        if len(token) > 1 and token not in _MATCH_NOISE
+        if len(token) > 1
+        and token not in _MATCH_NOISE
+        and token not in extra_noise
+        and not _EPISODE_TOKEN_RE.fullmatch(token)
     )
 
 
@@ -181,22 +208,40 @@ def _date_and_content(value: str) -> tuple[date | None, list[str]]:
     return None, parts
 
 
-def build_match_source(filename: str, torrent_title: str) -> MatchSource:
+def build_match_source(
+    filename: str,
+    torrent_title: str,
+    category: str | None = None,
+) -> MatchSource:
     site_label = (torrent_title or "").split(maxsplit=1)[0]
-    filename_date, content_parts = _date_and_content(filename)
-    title_date, title_parts = _date_and_content(torrent_title)
+    filename_text = _CAMEL_CASE_BOUNDARY_RE.sub(" ", filename or "")
+    title_text = _CAMEL_CASE_BOUNDARY_RE.sub(" ", torrent_title or "")
+    filename_date, content_parts = _date_and_content(filename_text)
+    title_date, title_parts = _date_and_content(title_text)
     # Some uploaders prepend their own upload date to the filename. The title's
     # date is the scene date and is therefore authoritative when both exist.
     release_date = title_date or filename_date
+    extra_noise = (
+        frozenset(_VR_NOISE)
+        if category == "VR/VirtualReality"
+        else frozenset()
+    )
 
     content_tokens = [
-        part for part in content_parts if len(part) > 1 and part not in _MATCH_NOISE
+        part
+        for part in content_parts
+        if len(part) > 1
+        and part not in _MATCH_NOISE
+        and part not in extra_noise
+        and not _EPISODE_TOKEN_RE.fullmatch(part)
     ]
     title_tokens = [
         part
         for part in title_parts
         if len(part) > 1
         and part not in _MATCH_NOISE
+        and part not in extra_noise
+        and not _EPISODE_TOKEN_RE.fullmatch(part)
         and _normalise_name(part) != _normalise_name(site_label)
     ]
     content = " ".join(content_tokens)
@@ -205,7 +250,7 @@ def build_match_source(filename: str, torrent_title: str) -> MatchSource:
         scoring_text = " ".join(title_tokens)
     elif not content_tokens:
         scoring_text = " ".join(title_tokens)
-    combined_tokens = _tokens(scoring_text)
+    combined_tokens = _tokens(scoring_text, extra_noise)
 
     query_candidates = [
         content,
@@ -256,7 +301,7 @@ def _candidate_score(
     candidate: dict,
     source: MatchSource,
     expected_site: dict | None,
-) -> tuple[float, bool, str, dict]:
+) -> tuple[float, bool, str, dict, int | None]:
     raw_site = candidate.get("site") if isinstance(candidate.get("site"), dict) else {}
     site_match = False
     if expected_site and expected_site.get("id"):
@@ -312,6 +357,12 @@ def _candidate_score(
             and date_delta <= 7
             and overlap >= 0.8
         )
+        or (
+            site_match
+            and overlap >= 0.95
+            and date_delta is not None
+            and date_delta <= 30
+        )
     )
     reason = (
         f"site={'yes' if site_match else 'no'} "
@@ -327,7 +378,7 @@ def _candidate_score(
         "accepted": accepted,
         "reason": reason,
     }
-    return score, accepted, reason, audit
+    return score, accepted, reason, audit, date_delta
 
 
 def choose_candidate(
@@ -349,22 +400,45 @@ def choose_candidate(
         if semantic_key in seen:
             continue
         seen.add(semantic_key)
-        score, accepted, reason, audit = _candidate_score(
+        score, accepted, reason, audit, date_delta = _candidate_score(
             candidate, source, expected_site
         )
-        ranked.append((score, accepted, reason, candidate, audit))
+        ranked.append((score, accepted, reason, candidate, audit, date_delta))
 
-    ranked.sort(key=lambda item: item[0], reverse=True)
+    ranked.sort(
+        key=lambda item: (
+            item[0],
+            -(item[5] if item[5] is not None else 10**9),
+        ),
+        reverse=True,
+    )
     audit = [item[4] for item in ranked[:10]]
     if not ranked:
         return CandidateDecision(None, 0.0, False, "no candidates", audit)
 
-    best = ranked[0]
-    margin = best[0] - ranked[1][0] if len(ranked) > 1 else 1.0
-    accepted = best[1] and margin >= 0.08
+    accepted_candidates = [item for item in ranked if item[1]]
+    if not accepted_candidates:
+        best = ranked[0]
+        return CandidateDecision(None, best[0], False, best[2], audit)
+
+    best = accepted_candidates[0]
+    margin = (
+        best[0] - accepted_candidates[1][0]
+        if len(accepted_candidates) > 1
+        else 1.0
+    )
+    accepted = margin >= 0.08
     reason = best[2]
-    if best[1] and not accepted:
+    if not accepted:
         reason = f"ambiguous top candidates (margin={margin:.3f}); {reason}"
+    else:
+        selected_audit = {**best[4], "selected": True}
+        for index, item in enumerate(audit):
+            if item is best[4]:
+                audit[index] = selected_audit
+                break
+        else:
+            audit.append(selected_audit)
     return CandidateDecision(best[3], best[0], accepted, reason, audit)
 
 

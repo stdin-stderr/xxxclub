@@ -243,6 +243,91 @@ SET next_retry_at = now()
 WHERE status = 'unmatched' AND next_retry_at IS NULL;
 """
 
+TPDB_MATCHER_V2_DELETE_LEGACY_SQL = """
+WITH RECURSIVE legacy_closure(torrent_id) AS (
+    SELECT torrent_id
+    FROM tpdb_match_attempts
+    WHERE method = 'parse_filename_first'
+
+    UNION
+
+    SELECT child.torrent_id
+    FROM tpdb_match_attempts child
+    JOIN legacy_closure parent
+      ON child.method = 'resolution_sibling'
+     AND child.candidate_metadata->0->>'source_torrent_id'
+         = parent.torrent_id::text
+    JOIN tpdb_match_attempts source
+      ON source.torrent_id = parent.torrent_id
+     AND source.scene_id = child.scene_id
+     AND source.scene_key IS NOT DISTINCT FROM child.scene_key
+)
+DELETE FROM tpdb_match_attempts
+WHERE torrent_id IN (SELECT torrent_id FROM legacy_closure)
+"""
+
+TPDB_MATCHER_V2_BACKFILL_SIBLINGS_SQL = """
+WITH RECURSIVE sibling_lineage(sibling_id, ancestor_id, path) AS (
+    SELECT
+        a.torrent_id,
+        (a.candidate_metadata->0->>'source_torrent_id')::bigint,
+        ARRAY[a.torrent_id, (a.candidate_metadata->0->>'source_torrent_id')::bigint]
+    FROM tpdb_match_attempts a
+    WHERE a.method = 'resolution_sibling'
+      AND (a.candidate_metadata->0->>'source_torrent_id') ~ '^[0-9]+$'
+
+    UNION ALL
+
+    SELECT
+        lineage.sibling_id,
+        (parent.candidate_metadata->0->>'source_torrent_id')::bigint,
+        lineage.path
+            || (parent.candidate_metadata->0->>'source_torrent_id')::bigint
+    FROM sibling_lineage lineage
+    JOIN tpdb_match_attempts parent
+      ON parent.torrent_id = lineage.ancestor_id
+    WHERE parent.method = 'resolution_sibling'
+      AND (parent.candidate_metadata->0->>'source_torrent_id') ~ '^[0-9]+$'
+      AND NOT (
+          (parent.candidate_metadata->0->>'source_torrent_id')::bigint
+          = ANY(lineage.path)
+      )
+),
+scored_roots AS (
+    SELECT DISTINCT ON (lineage.sibling_id)
+        lineage.sibling_id,
+        root.torrent_id AS root_id,
+        root.match_score
+    FROM sibling_lineage lineage
+    JOIN tpdb_match_attempts sibling
+      ON sibling.torrent_id = lineage.sibling_id
+    JOIN tpdb_match_attempts root
+      ON root.torrent_id = lineage.ancestor_id
+     AND root.scene_id = sibling.scene_id
+     AND root.scene_key IS NOT DISTINCT FROM sibling.scene_key
+    WHERE root.status = 'matched'
+      AND root.scene_id IS NOT NULL
+      AND root.method NOT IN ('resolution_sibling', 'parse_filename_first')
+      AND root.match_score IS NOT NULL
+    ORDER BY lineage.sibling_id
+)
+UPDATE tpdb_match_attempts sibling
+SET
+    match_score = roots.match_score,
+    candidate_metadata = jsonb_build_array(
+        jsonb_build_object('source_torrent_id', roots.root_id)
+    )
+FROM scored_roots roots
+WHERE sibling.torrent_id = roots.sibling_id
+  AND sibling.method = 'resolution_sibling'
+  AND (
+      sibling.match_score IS DISTINCT FROM roots.match_score
+      OR sibling.candidate_metadata IS DISTINCT FROM jsonb_build_array(
+          jsonb_build_object('source_torrent_id', roots.root_id)
+      )
+  )
+"""
+
 TORRENT_COLUMNS = [
     "torrent_id", "info_hash", "title", "category", "size_bytes",
     "added_at", "seeders", "leechers", "last_scraped",
@@ -258,6 +343,19 @@ async def create_pool(dsn: str) -> asyncpg.Pool:
 async def init_schema(pool: asyncpg.Pool) -> None:
     async with pool.acquire() as conn:
         await conn.execute(SCHEMA_SQL)
+
+
+async def migrate_tpdb_matcher_v2(pool: asyncpg.Pool) -> dict[str, int]:
+    """Remove unaudited legacy matches and flatten sibling confidence lineage."""
+
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            deleted = await conn.execute(TPDB_MATCHER_V2_DELETE_LEGACY_SQL)
+            backfilled = await conn.execute(TPDB_MATCHER_V2_BACKFILL_SIBLINGS_SQL)
+    return {
+        "legacy_deleted": int(deleted.rsplit(" ", 1)[-1]),
+        "siblings_backfilled": int(backfilled.rsplit(" ", 1)[-1]),
+    }
 
 
 async def upsert_torrent(pool: asyncpg.Pool, data: dict) -> None:
@@ -510,7 +608,10 @@ async def fetch_tpdb_match_candidates(
 
 
 async def fetch_tpdb_shadow_candidates(
-    pool: asyncpg.Pool, limit: int
+    pool: asyncpg.Pool,
+    limit: int,
+    *,
+    torrent_ids: list[int] | None = None,
 ) -> list[asyncpg.Record]:
     async with pool.acquire() as conn:
         return await conn.fetch(
@@ -520,12 +621,28 @@ async def fetch_tpdb_shadow_candidates(
             FROM torrents t
             LEFT JOIN tpdb_match_attempts a ON a.torrent_id = t.torrent_id
             WHERE t.category = ANY($1::text[])
-              AND (a.torrent_id IS NULL OR a.status = 'unmatched')
-            ORDER BY t.added_at DESC, t.torrent_id DESC
+              AND (
+                  (
+                      $3::bigint[] IS NULL
+                      AND (a.torrent_id IS NULL OR a.status = 'unmatched')
+                  )
+                  OR (
+                      $3::bigint[] IS NOT NULL
+                      AND t.torrent_id = ANY($3::bigint[])
+                  )
+              )
+            ORDER BY
+                CASE
+                    WHEN $3::bigint[] IS NULL THEN NULL
+                    ELSE array_position($3::bigint[], t.torrent_id)
+                END,
+                t.added_at DESC,
+                t.torrent_id DESC
             LIMIT $2
             """,
             list(TPDB_CATEGORIES),
             limit,
+            torrent_ids,
         )
 
 
@@ -599,12 +716,17 @@ async def find_reusable_tpdb_match(
     async with pool.acquire() as conn:
         return await conn.fetchrow(
             """
-            SELECT a.scene_id, a.torrent_id AS source_torrent_id
+            SELECT
+                a.scene_id,
+                a.torrent_id AS source_torrent_id,
+                a.match_score
             FROM tpdb_match_attempts a
             WHERE a.status = 'matched'
               AND a.scene_id IS NOT NULL
               AND a.scene_key = $1
               AND a.torrent_id <> $2
+              AND a.method NOT IN ('resolution_sibling', 'parse_filename_first')
+              AND a.match_score IS NOT NULL
             ORDER BY a.attempted_at DESC
             LIMIT 1
             """,
@@ -622,6 +744,7 @@ async def save_reused_tpdb_match(
     file_size_bytes: int | None,
     scene_key: str,
     source_torrent_id: int,
+    match_score,
 ) -> None:
     async with pool.acquire() as conn:
         await conn.execute(
@@ -633,8 +756,8 @@ async def save_reused_tpdb_match(
                 next_retry_at
             )
             VALUES (
-                $1,$2,$3,$4,'resolution_sibling',$5,NULL,1,
-                $6::jsonb,'matched',1,200,NULL,now(),NULL
+                $1,$2,$3,$4,'resolution_sibling',$5,NULL,$6,
+                $7::jsonb,'matched',1,200,NULL,now(),NULL
             )
             ON CONFLICT (torrent_id) DO UPDATE SET
                 scene_id=EXCLUDED.scene_id,
@@ -643,7 +766,7 @@ async def save_reused_tpdb_match(
                 method=EXCLUDED.method,
                 scene_key=EXCLUDED.scene_key,
                 search_query=NULL,
-                match_score=1,
+                match_score=EXCLUDED.match_score,
                 candidate_metadata=EXCLUDED.candidate_metadata,
                 status='matched',
                 candidate_count=1,
@@ -658,6 +781,7 @@ async def save_reused_tpdb_match(
             filename,
             file_size_bytes,
             scene_key,
+            match_score,
             json.dumps([{"source_torrent_id": source_torrent_id}]),
         )
 
