@@ -5,7 +5,7 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY db.py rate_limiter.py scraper.py crawler.py entrypoint.py webapp.py tpdb_client.py tpdb_matcher.py ./
+COPY db.py config.py host_pool.py scraper.py crawler.py entrypoint.py webapp.py tpdb_client.py tpdb_matcher.py ./
 COPY web/ web/
 COPY docker-entrypoint.sh /usr/local/bin/xxxclub
 

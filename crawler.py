@@ -1,5 +1,5 @@
 """Unified crawler loop: frontier scan/extend -> backward drain chunk -> age-tiered refresh.
-See PLAN.md "Unified crawler loop".
+See implementation.md "Unified crawler loop".
 """
 
 import asyncio
@@ -7,11 +7,16 @@ import logging
 import re
 from datetime import datetime, timedelta, timezone
 
-import aiohttp
-
 import db
-from rate_limiter import AdaptiveLimiter
-from scraper import ParseError, fetch_details, looks_like_details_page, parse_details_html
+from host_pool import HostPool
+from scraper import (
+    ParseError,
+    details_path,
+    looks_like_challenge,
+    looks_like_details_page,
+    looks_like_soft_404,
+    parse_details_html,
+)
 
 log = logging.getLogger("crawler")
 
@@ -33,70 +38,54 @@ def next_refresh_delay(added_at: datetime | None) -> timedelta:
 
 
 class Crawler:
-    def __init__(self, config: dict, pool, session: aiohttp.ClientSession, limiter: AdaptiveLimiter):
+    def __init__(self, config: dict, pool, session, hosts: HostPool):
         self.config = config
         self.pool = pool
         self.session = session
-        self.limiter = limiter
-        self.base_url = config["BASE_URL"]
+        self.hosts = hosts
         self.tz_name = config["SITE_TZ"]
 
     async def fetch_and_classify(self, torrent_id: int):
-        """Fetch one details page, run it through the rate limiter, classify the outcome.
+        """Fetch one details page from the next available host, classify the outcome.
         Returns (kind, data_or_none, http_status_str).
         kind in: 'success', 'not_found', 'redirect', 'parse_error', 'blocked', 'server_error',
                  'timeout', 'connection_error'.
+
+        Host pacing and cooling are entirely HostPool's business; this only maps the
+        Outcome onto the ledger vocabulary.
         """
-        async with self.limiter.slot() as limiter:
+        outcome = await self.hosts.fetch(
+            details_path(torrent_id),
+            validate=looks_like_details_page,
+            is_blocked=looks_like_challenge,
+        )
+
+        if outcome.kind == "ok":
             try:
-                status, html, location, retry_after = await fetch_details(self.session, self.base_url, torrent_id)
-            except asyncio.TimeoutError:
-                limiter.note_failure("timeout")
-                return "timeout", None, None
-            except aiohttp.ClientConnectionError:
-                limiter.note_failure("connection_error")
-                return "connection_error", None, None
-            except aiohttp.ClientError as exc:
-                limiter.note_failure("connection_error")
-                log.warning("client error fetching %s: %s", torrent_id, exc)
-                return "connection_error", None, None
-
-            if status == 404:
-                limiter.note_success()
-                return "not_found", None, "404"
-
-            if status in (301, 302, 303, 307, 308):
-                limiter.note_success()
-                return "redirect", None, f"{status}->{location}"
-
-            if status in (403, 429):
-                limiter.note_failure("blocked", retry_after=retry_after)
-                return "blocked", None, str(status)
-
-            if status >= 500:
-                limiter.note_failure("server_error")
-                return "server_error", None, str(status)
-
-            if status != 200:
-                # Unexpected status (e.g. 400/410/418): not a 404/redirect we can
-                # classify, but not a block/overload signal either. Feed it into
-                # neither the clean-streak (would wrongly push ramp-up) nor the
-                # breaker (would wrongly trip); just record it as transient.
-                return "parse_error", None, str(status)
-
-            if not looks_like_details_page(html):
-                limiter.note_failure("challenge")
-                return "parse_error", None, "200-no-structure"
-
-            try:
-                data = parse_details_html(html, torrent_id, self.tz_name)
+                data = parse_details_html(outcome.html, torrent_id, self.tz_name)
             except ParseError as exc:
-                limiter.note_failure("parse_error")
+                # A structurally valid page we could not parse is a data problem, not a
+                # pacing signal -- the host is deliberately left uncooled (see implementation.md).
                 log.warning("parse_error on %s: %s", torrent_id, exc)
                 return "parse_error", None, "200-parse-error"
-
-            limiter.note_success()
             return "success", data, "200"
+
+        if outcome.kind == "unrecognized":
+            # The site serves "not found" as 200 + errordiv, never as a real 404, so
+            # this is the normal outcome for any ID that does not exist yet.
+            if looks_like_soft_404(outcome.html or ""):
+                return "not_found", None, "200-soft-404"
+            log.warning("unrecognized 200 page on %s", torrent_id)
+            return "parse_error", None, "200-no-structure"
+
+        if outcome.kind == "challenge":
+            return "blocked", None, "200-challenge"
+
+        if outcome.kind == "unexpected_status":
+            return "parse_error", None, outcome.http_status
+
+        # not_found / redirect / blocked / server_error / timeout / connection_error
+        return outcome.kind, None, outcome.http_status
 
     async def resolve_id(self, torrent_id: int, gap_relative_to_highest: bool):
         kind, data, http_status = await self.fetch_and_classify(torrent_id)
@@ -123,7 +112,7 @@ class Crawler:
         await db.upsert_id_status(self.pool, torrent_id, status, http_status, next_retry)
         return kind, None
 
-    async def frontier_cycle(self, lookahead: int, dry_streak: int, batch_concurrency: int):
+    async def frontier_cycle(self, lookahead: int, dry_streak: int):
         state = await db.get_crawl_state(self.pool)
         # Fold in successes found by other cycles (e.g. the retry ledger) so the
         # cap tracks real growth. Without this the frontier would freeze once
@@ -148,12 +137,9 @@ class Crawler:
             )
             return
 
-        sem = asyncio.Semaphore(batch_concurrency)
-
         async def worker(tid):
-            async with sem:
-                kind, _ = await self.resolve_id(tid, gap_relative_to_highest=False)
-                return tid, kind
+            kind, _ = await self.resolve_id(tid, gap_relative_to_highest=False)
+            return tid, kind
 
         results = await asyncio.gather(*(worker(tid) for tid in range(start, end + 1)))
 
@@ -169,22 +155,20 @@ class Crawler:
 
         log.info("frontier cycle %d..%d done, highest_success_id=%d", start, end, highest_success)
 
-    async def retry_due_ledger(self, limit: int, batch_concurrency: int):
+    async def retry_due_ledger(self, limit: int):
         rows = await db.fetch_retry_due(self.pool, limit)
         if not rows:
             return
-        sem = asyncio.Semaphore(batch_concurrency)
         state = await db.get_crawl_state(self.pool)
         highest = state["highest_success_id"]
 
         async def worker(row):
-            async with sem:
-                await self.resolve_id(row["torrent_id"], gap_relative_to_highest=row["torrent_id"] < highest)
+            await self.resolve_id(row["torrent_id"], gap_relative_to_highest=row["torrent_id"] < highest)
 
         await asyncio.gather(*(worker(r) for r in rows))
         log.info("retried %d due ledger entries", len(rows))
 
-    async def backward_drain_chunk(self, chunk_size: int, confirm_window: int, safety_margin: int, batch_concurrency: int):
+    async def backward_drain_chunk(self, chunk_size: int, confirm_window: int, safety_margin: int):
         state = await db.get_crawl_state(self.pool)
         if state["backfill_completed_at"] is not None:
             return
@@ -197,11 +181,8 @@ class Crawler:
         if chunk_start >= floor:
             return
 
-        sem = asyncio.Semaphore(batch_concurrency)
-
         async def worker(tid):
-            async with sem:
-                await self.resolve_id(tid, gap_relative_to_highest=True)
+            await self.resolve_id(tid, gap_relative_to_highest=True)
 
         ids = list(range(chunk_start, floor))
         await asyncio.gather(*(worker(tid) for tid in ids))
@@ -232,19 +213,17 @@ class Crawler:
         else:
             log.info("backward drain %d..%d, floor now %d", chunk_start, floor, new_floor)
 
-    async def refresh_cycle(self, limit: int, batch_concurrency: int):
+    async def refresh_cycle(self, limit: int):
         rows = await db.fetch_refresh_due(self.pool, limit)
         if not rows:
             return
-        sem = asyncio.Semaphore(batch_concurrency)
 
         async def worker(row):
-            async with sem:
-                kind, data = await self.resolve_id(row["torrent_id"], gap_relative_to_highest=True)
-                if kind not in ("success", "not_found", "redirect"):
-                    await db.bump_next_refresh(
-                        self.pool, row["torrent_id"], datetime.now(timezone.utc) + timedelta(hours=6)
-                    )
+            kind, data = await self.resolve_id(row["torrent_id"], gap_relative_to_highest=True)
+            if kind not in ("success", "not_found", "redirect"):
+                await db.bump_next_refresh(
+                    self.pool, row["torrent_id"], datetime.now(timezone.utc) + timedelta(hours=6)
+                )
 
         await asyncio.gather(*(worker(r) for r in rows))
         log.info("refreshed %d rows", len(rows))
@@ -275,29 +254,24 @@ class Crawler:
             log.info("BACKFILL_DAYS increased, cutoff moved back to %s, resuming backward walk", desired_cutoff)
 
     async def _discover_topten_max(self) -> int:
-        url = f"{self.base_url}/torrents/topten/"
-        try:
-            async with self.limiter.slot() as limiter:
-                async with self.session.get(url, timeout=15.0) as resp:
-                    if resp.status != 200:
-                        limiter.note_failure("server_error" if resp.status >= 500 else "blocked")
-                        return 0
-                    text = await resp.text()
-                    limiter.note_success()
-        except (asyncio.TimeoutError, aiohttp.ClientError):
+        # Goes through the pool like every other request, so discovery is paced and
+        # cooled on the same terms as the crawl itself.
+        outcome = await self.hosts.fetch("/torrents/topten/")
+        if outcome.kind != "ok" or not outcome.html:
+            log.warning("topten discovery failed: %s", outcome.kind)
             return 0
 
-        ids = [int(m) for m in re.findall(r"/torrents/details/(\d+)", text)]
+        ids = [int(m) for m in re.findall(r"/torrents/details/(\d+)", outcome.html)]
         return max(ids) if ids else 0
 
     async def run_cycle(self):
         cfg = self.config
-        await self.retry_due_ledger(cfg["RETRY_BATCH_SIZE"], cfg["MAX_CONCURRENCY"])
-        await self.frontier_cycle(cfg["FRONTIER_LOOKAHEAD"], cfg["FRONTIER_DRY_STREAK"], cfg["MAX_CONCURRENCY"])
+        await self.retry_due_ledger(cfg["RETRY_BATCH_SIZE"])
+        await self.frontier_cycle(cfg["FRONTIER_LOOKAHEAD"], cfg["FRONTIER_DRY_STREAK"])
         await self.backward_drain_chunk(
-            cfg["BACKFILL_CHUNK_SIZE"], cfg["BACKFILL_CONFIRM_WINDOW"], cfg["BACKFILL_SAFETY_MARGIN_IDS"], cfg["MAX_CONCURRENCY"]
+            cfg["BACKFILL_CHUNK_SIZE"], cfg["BACKFILL_CONFIRM_WINDOW"], cfg["BACKFILL_SAFETY_MARGIN_IDS"]
         )
-        await self.refresh_cycle(cfg["REFRESH_BATCH_SIZE"], cfg["MAX_CONCURRENCY"])
+        await self.refresh_cycle(cfg["REFRESH_BATCH_SIZE"])
 
     async def run_forever(self):
         await self.bootstrap_if_needed()

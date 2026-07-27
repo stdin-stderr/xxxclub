@@ -178,6 +178,9 @@
       <span>Uploaded by <strong>{{ t.uploader or 'Unknown' }}</strong></span>
       <span>Added <strong>{{ t.added_at | date(with_time=True) }}</strong></span>
       <span>Torrent ID <strong>{{ t.torrent_id }}</strong></span>
+      {% if t.matched_scene %}
+      <span>Matched Scene <strong><a href="/scenes/{{ t.matched_scene.scene_id }}">{{ t.matched_scene.title }}</a></strong></span>
+      {% endif %}
     </div>
   </div>
 
@@ -244,6 +247,16 @@
     </div>
 
     <div class="col-side">
+      {% if t.matched_scene %}
+      <div class="side-card">
+        <h3>Matched Scene</h3>
+        <div class="meta-row"><span class="k">Title</span><span class="v"><a href="/scenes/{{ t.matched_scene.scene_id }}">{{ t.matched_scene.title }}</a></span></div>
+        {% if t.matched_scene.site_name %}
+        <div class="meta-row"><span class="k">Site</span><span class="v">{{ t.matched_scene.site_name }}</span></div>
+        {% endif %}
+      </div>
+      {% endif %}
+
       <div class="side-card">
         <h3>Tags</h3>
         {% if t.tags %}

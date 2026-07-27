@@ -1,6 +1,7 @@
-"""Fetch + parse a single /torrents/details/{id} page. See PLAN.md field inventory / Data model."""
+"""Fetch + parse a single /torrents/details/{id} page. See implementation.md field inventory / Data model."""
 
 import email.utils
+import math
 import re
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
@@ -245,23 +246,71 @@ def looks_like_details_page(html: str) -> bool:
     return 'class="detailsdiv"' in html or "class=\"detailsdescr\"" in html
 
 
-async def fetch_details(session, base_url: str, torrent_id: int, timeout: float = 15.0):
-    """Returns (status, html_or_none, redirect_location_or_none, retry_after_seconds_or_none)."""
-    url = f"{base_url}/torrents/details/{torrent_id}"
+def looks_like_soft_404(html: str) -> bool:
+    """The site serves 'not found' as HTTP 200 with its normal chrome plus an errordiv.
+
+    Non-existent IDs never return a real 404 status -- verified live: /details/460000
+    is `200` carrying `<div class="errordiv"><h1>Error :</h1> ... 404 : Not Found`.
+    This is a normal data outcome, not a block, so it must not cool the host.
+    """
+    return 'class="errordiv"' in html
+
+
+# Cloudflare's beacon script (/cdn-cgi/challenge-platform/...) is present on EVERY
+# page including valid ones, so the word "challenge" alone is useless as a marker.
+# These are interstitial-only.
+CHALLENGE_MARKERS = (
+    "cf-browser-verification",
+    "_cf_chl_opt",
+    'id="challenge-form"',
+    "cf-error-details",
+    "Attention Required! | Cloudflare",
+    "Just a moment...",
+)
+
+
+def looks_like_challenge(html: str) -> bool:
+    """Positively identify a block/interstitial. Anything merely unrecognized is NOT
+    treated as a block -- guessing that way is what stalls the crawler."""
+    return any(marker in html for marker in CHALLENGE_MARKERS)
+
+
+def parse_retry_after(value: str | None) -> float | None:
+    """Both header forms -> seconds. Returns None for absent/malformed/non-finite values.
+
+    The HTTP-date form can yield a negative result (past date, or clock skew): that is
+    returned as-is and normalized by the caller, which knows what floor to apply.
+    """
+    if not value:
+        return None
+    try:
+        seconds = float(value)
+    except ValueError:
+        try:
+            retry_dt = email.utils.parsedate_to_datetime(value)
+            seconds = (retry_dt - datetime.now(timezone.utc)).total_seconds()
+        except (ValueError, TypeError):
+            return None
+    return seconds if math.isfinite(seconds) else None
+
+
+async def fetch_page(session, url: str, timeout: float = 15.0):
+    """Returns (status, html_or_none, redirect_location_or_none, retry_after_seconds_or_none).
+
+    Redirects are never followed (see implementation.md); a 3xx returns its Location instead of a body.
+    """
     async with session.get(url, allow_redirects=False, timeout=ClientTimeout(total=timeout)) as resp:
-        status = resp.status
-        retry_after = resp.headers.get("Retry-After")
-        retry_after_seconds = None
-        if retry_after:
-            try:
-                retry_after_seconds = float(retry_after)
-            except ValueError:
-                try:
-                    retry_dt = email.utils.parsedate_to_datetime(retry_after)
-                    retry_after_seconds = (retry_dt - datetime.now(timezone.utc)).total_seconds()
-                except (ValueError, TypeError):
-                    retry_after_seconds = None
-        if status in (301, 302, 303, 307, 308):
-            return status, None, resp.headers.get("Location"), retry_after_seconds
+        retry_after_seconds = parse_retry_after(resp.headers.get("Retry-After"))
+        if resp.status in (301, 302, 303, 307, 308):
+            return resp.status, None, resp.headers.get("Location"), retry_after_seconds
         text = await resp.text()
-        return status, text, None, retry_after_seconds
+        return resp.status, text, None, retry_after_seconds
+
+
+def details_path(torrent_id: int) -> str:
+    return f"/torrents/details/{torrent_id}"
+
+
+async def fetch_details(session, base_url: str, torrent_id: int, timeout: float = 15.0):
+    """Kept for probe_limit.py, which deliberately bypasses the host pool."""
+    return await fetch_page(session, f"{base_url}{details_path(torrent_id)}", timeout)

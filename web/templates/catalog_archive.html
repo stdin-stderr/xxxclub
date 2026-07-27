@@ -15,7 +15,14 @@
   .filter-chip:hover{color:var(--accent);border-color:var(--accent);}
   .filter-chip.active{background:var(--accent);border-color:var(--accent);color:var(--cream);}
   .filter-count{opacity:.65;}
-  .result-meta{max-width:1200px;margin:0 auto;padding:14px 24px;color:var(--ink-soft);font-size:12px;}
+  .result-meta{max-width:1200px;margin:0 auto;padding:14px 24px;color:var(--ink-soft);font-size:12px;display:flex;justify-content:space-between;align-items:baseline;flex-wrap:wrap;gap:6px;}
+  .sort-form{display:inline;}
+  .sort-form select{
+    font-family:Georgia,serif;font-style:italic;font-size:12px;
+    background:transparent;color:var(--ink);border:none;border-bottom:1px solid var(--ink-soft);
+    padding:2px 4px;
+  }
+  .sort-form select:focus{outline:none;border-bottom-color:var(--accent);}
   .catalog-grid{max-width:1200px;margin:0 auto;padding:0 24px 42px;display:grid;grid-template-columns:repeat(4,1fr);gap:20px;}
   .catalog-card{border:1px solid var(--ink);background:var(--card);position:relative;}
   .catalog-card.featured{grid-column:span 2;}
@@ -37,6 +44,8 @@
   .catalog-body h3{font-size:17px;line-height:1.25;margin:0 0 8px;}
   .catalog-card.featured .catalog-body h3{font-size:22px;}
   .catalog-meta{display:flex;justify-content:space-between;gap:8px;color:var(--ink-soft);font-size:11px;border-top:1px dashed #cfc6b2;padding-top:9px;}
+  .catalog-meta.sub{border-top:0;padding-top:4px;}
+  .catalog-meta .peers{color:var(--good);}
   .pagination{display:flex;justify-content:center;gap:18px;padding:0 24px 54px;font-size:12px;text-transform:uppercase;letter-spacing:.08em;}
   .pagination a{text-decoration:none;border-bottom:1px solid var(--ink);}
   .disabled{color:var(--ink-soft);opacity:.45;}
@@ -57,9 +66,10 @@
   <h2>{{ labels.plural }}</h2>
 </section>
 
-<form class="search" method="get" action="{{ '/' if entity == 'scenes' else '/' ~ entity }}">
+<form class="search" method="get" action="{{ archive_path }}">
   <input type="search" name="q" value="{{ q }}" placeholder="Search {{ labels.plural | lower }} by name&hellip;">
   {% if entity == 'scenes' and tag %}<input type="hidden" name="tag" value="{{ tag }}">{% endif %}
+  <input type="hidden" name="sort" value="{{ sort }}">
   <button type="submit">Search</button>
 </form>
 {% if entity == 'scenes' and tags %}
@@ -77,7 +87,21 @@
 </nav>
 {% endif %}
 <hr class="rule-thin">
-<div class="result-meta">Showing {{ start }}&ndash;{{ end }} of {{ total_fmt }}</div>
+<div class="result-meta">
+  <span>Showing {{ start }}&ndash;{{ end }} of {{ total_fmt }}</span>
+  <form class="sort-form" method="get" action="{{ archive_path }}">
+    <input type="hidden" name="q" value="{{ q }}">
+    {% if entity == 'scenes' and tag %}<input type="hidden" name="tag" value="{{ tag }}">{% endif %}
+    <label>Sorted by
+      <select name="sort" onchange="this.form.submit()">
+        {% for value, label in sort_options.items() %}
+        <option value="{{ value }}"{{ ' selected' if value == sort }}>{{ label }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <noscript><button type="submit">Apply</button></noscript>
+  </form>
+</div>
 
 {% if records %}
 <main class="catalog-grid">
@@ -90,10 +114,21 @@
       </div>
       <div class="catalog-body">
         <h3>{{ item.name }}</h3>
+        {% if entity == 'scenes' %}
         <div class="catalog-meta">
-          <span>{{ item.secondary or (item.date | date if item.date else labels.singular) }}</span>
-          <span>{{ item.related_count }} {{ labels.related }}</span>
+          <span>{{ item.secondary or labels.singular }}</span>
+          <span>{% if item.date %}{{ item.date | date }}{% endif %}</span>
         </div>
+        <div class="catalog-meta sub">
+          <span>{{ item.related_count }} {{ labels.related }}</span>
+          <span class="peers" title="{{ item.total_seeders | num }} seeders + {{ item.total_leechers | num }} leechers across {{ item.torrent_count }} torrent{{ '' if item.torrent_count == 1 else 's' }}">{{ item.popularity | num }} peers</span>
+        </div>
+        {% else %}
+        <div class="catalog-meta">
+          <span>{{ item.secondary or labels.singular }}</span>
+          <span>{% if item.date %}{{ item.date | date }} &middot; {% endif %}{{ item.related_count }} {{ labels.related }}</span>
+        </div>
+        {% endif %}
       </div>
     </a>
   </article>

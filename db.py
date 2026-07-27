@@ -1,4 +1,4 @@
-"""Postgres schema + data-access helpers. See PLAN.md Data model / Non-negotiables 1+2."""
+"""Postgres schema + data-access helpers. See implementation.md Data model / crawl_state / id_status."""
 
 import json
 
@@ -442,12 +442,23 @@ async def list_torrents(
 async def get_torrent(pool: asyncpg.Pool, torrent_id: int) -> dict | None:
     async with pool.acquire() as conn:
         row = await conn.fetchrow("SELECT * FROM torrents WHERE torrent_id = $1", torrent_id)
-    if row is None:
-        return None
-    data = dict(row)
-    for col in JSONB_COLUMNS:
-        if isinstance(data.get(col), str):
-            data[col] = json.loads(data[col])
+        if row is None:
+            return None
+        data = dict(row)
+        for col in JSONB_COLUMNS:
+            if isinstance(data.get(col), str):
+                data[col] = json.loads(data[col])
+        scene = await conn.fetchrow(
+            """
+            SELECT s.scene_id, s.title, st.name AS site_name
+            FROM tpdb_match_attempts a
+            JOIN tpdb_scenes s ON s.scene_id = a.scene_id
+            LEFT JOIN tpdb_sites st ON st.site_id = s.site_id
+            WHERE a.torrent_id = $1 AND a.status = 'matched'
+            """,
+            torrent_id,
+        )
+        data["matched_scene"] = dict(scene) if scene is not None else None
     return data
 
 
@@ -959,14 +970,29 @@ CATALOG_ENTITY_CONFIG = {
         "list": """
             SELECT s.scene_id AS id, s.title AS name, s.release_date AS date,
                    COALESCE(s.background_url, s.image_url, s.poster_url) AS image_url,
-                   st.name AS secondary, count(DISTINCT sp.performer_id) AS related_count
+                   st.name AS secondary, perf.n AS related_count,
+                   pop.seeders AS total_seeders, pop.leechers AS total_leechers,
+                   pop.torrent_count AS torrent_count, pop.popularity AS popularity
             FROM tpdb_scenes s
             LEFT JOIN tpdb_sites st ON st.site_id = s.site_id
-            LEFT JOIN tpdb_scene_performers sp ON sp.scene_id = s.scene_id
+            LEFT JOIN LATERAL (
+                SELECT count(*)::int AS n
+                FROM tpdb_scene_performers sp
+                WHERE sp.scene_id = s.scene_id
+            ) perf ON TRUE
+            LEFT JOIN LATERAL (
+                SELECT COALESCE(sum(t.seeders), 0)::bigint AS seeders,
+                       COALESCE(sum(t.leechers), 0)::bigint AS leechers,
+                       count(*)::int AS torrent_count,
+                       COALESCE(sum(t.seeders), 0)::bigint
+                         + COALESCE(sum(t.leechers), 0)::bigint AS popularity
+                FROM tpdb_match_attempts a
+                JOIN torrents t ON t.torrent_id = a.torrent_id
+                WHERE a.scene_id = s.scene_id
+            ) pop ON TRUE
             WHERE ($1::text IS NULL OR s.title ILIKE $1)
               AND ($2::text IS NULL OR s.tags @> ARRAY[$2]::text[])
-            GROUP BY s.scene_id, st.name
-            ORDER BY s.release_date DESC NULLS LAST, s.title
+            ORDER BY {order_by}
             LIMIT $3 OFFSET $4
         """,
     },
@@ -981,7 +1007,7 @@ CATALOG_ENTITY_CONFIG = {
             LEFT JOIN tpdb_scenes s ON s.site_id = st.site_id
             WHERE ($1::text IS NULL OR st.name ILIKE $1)
             GROUP BY st.site_id, n.name
-            ORDER BY st.name
+            ORDER BY {order_by}
             LIMIT $2 OFFSET $3
         """,
     },
@@ -995,7 +1021,7 @@ CATALOG_ENTITY_CONFIG = {
             LEFT JOIN tpdb_sites st ON st.network_id = n.network_id
             WHERE ($1::text IS NULL OR n.name ILIKE $1)
             GROUP BY n.network_id
-            ORDER BY n.name
+            ORDER BY {order_by}
             LIMIT $2 OFFSET $3
         """,
     },
@@ -1010,11 +1036,53 @@ CATALOG_ENTITY_CONFIG = {
             LEFT JOIN tpdb_scene_performers sp ON sp.performer_id = p.performer_id
             WHERE ($1::text IS NULL OR p.name ILIKE $1)
             GROUP BY p.performer_id
-            ORDER BY p.name
+            ORDER BY {order_by}
             LIMIT $2 OFFSET $3
         """,
     },
 }
+
+
+CATALOG_SORT_OPTIONS = {
+    "scenes": {
+        # popularity = seeders + leechers summed over the scene's matched torrents
+        "popularity_desc": "pop.popularity DESC, s.release_date DESC NULLS LAST, s.title",
+        "date_desc": "s.release_date DESC NULLS LAST, s.title",
+        "date_asc": "s.release_date ASC NULLS LAST, s.title",
+    },
+    "sites": {
+        "name_asc": "st.name ASC",
+        "name_desc": "st.name DESC",
+        "scenes_desc": "count(DISTINCT s.scene_id) DESC, st.name",
+        "network_asc": "n.name ASC NULLS LAST, st.name",
+    },
+    "networks": {
+        "name_asc": "n.name ASC",
+        "name_desc": "n.name DESC",
+        "sites_desc": "count(DISTINCT st.site_id) DESC, n.name",
+    },
+    "performers": {
+        "name_asc": "p.name ASC",
+        "name_desc": "p.name DESC",
+        "scenes_desc": "count(DISTINCT sp.scene_id) DESC, p.name",
+        "birth_desc": "p.birth_date DESC NULLS LAST, p.name",
+        "birth_asc": "p.birth_date ASC NULLS LAST, p.name",
+    },
+}
+CATALOG_DEFAULT_SORT = {
+    "scenes": "popularity_desc",
+    "sites": "name_asc",
+    "networks": "name_asc",
+    "performers": "name_asc",
+}
+
+
+def catalog_order_by(entity: str, sort: str | None) -> str:
+    """Resolve a request sort key to a whitelisted ORDER BY clause."""
+    options = CATALOG_SORT_OPTIONS[entity]
+    if sort not in options:
+        sort = CATALOG_DEFAULT_SORT[entity]
+    return options[sort]
 
 
 async def count_catalog_entities(
@@ -1037,15 +1105,17 @@ async def list_catalog_entities(
     *,
     q: str | None = None,
     tag: str | None = None,
+    sort: str | None = None,
     limit: int = 24,
     offset: int = 0,
 ) -> list[asyncpg.Record]:
     config = CATALOG_ENTITY_CONFIG[entity]
     search = f"%{q}%" if q else None
+    sql = config["list"].format(order_by=catalog_order_by(entity, sort))
     async with pool.acquire() as conn:
         if entity == "scenes":
-            return await conn.fetch(config["list"], search, tag, limit, offset)
-        return await conn.fetch(config["list"], search, limit, offset)
+            return await conn.fetch(sql, search, tag, limit, offset)
+        return await conn.fetch(sql, search, limit, offset)
 
 
 async def top_scene_tags(
@@ -1168,7 +1238,7 @@ async def get_catalog_detail(pool: asyncpg.Pool, entity: str, entity_id) -> dict
                     FROM tpdb_match_attempts a
                     JOIN torrents t ON t.torrent_id = a.torrent_id
                     WHERE a.scene_id = $1
-                    ORDER BY t.added_at DESC
+                    ORDER BY t.size_bytes DESC NULLS LAST
                     """,
                     entity_id,
                 )

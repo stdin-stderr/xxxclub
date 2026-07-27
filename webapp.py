@@ -65,6 +65,12 @@ def format_date(dt, with_time: bool = False) -> str:
     return dt.strftime("%b %d, %Y")
 
 
+def format_number(n) -> str:
+    if n is None:
+        return "0"
+    return f"{int(n):,}"
+
+
 def format_datetime_full(dt) -> str:
     if dt is None:
         return "Pending"
@@ -79,6 +85,7 @@ env.filters["size"] = format_size
 env.filters["duration"] = format_duration
 env.filters["date"] = format_date
 env.filters["datetime_full"] = format_datetime_full
+env.filters["num"] = format_number
 
 
 def render(name: str, **ctx) -> web.Response:
@@ -92,6 +99,32 @@ SORT_LABELS = {
     "seeders_desc": "Seeders, descending",
     "size_desc": "Size, descending",
     "downloads_desc": "Downloads, descending",
+}
+
+CATALOG_SORT_LABELS = {
+    "scenes": {
+        "popularity_desc": "Top scenes",
+        "date_desc": "Release date, newest first",
+        "date_asc": "Release date, oldest first",
+    },
+    "sites": {
+        "name_asc": "Name, A to Z",
+        "name_desc": "Name, Z to A",
+        "scenes_desc": "Scene count, descending",
+        "network_asc": "Network, A to Z",
+    },
+    "networks": {
+        "name_asc": "Name, A to Z",
+        "name_desc": "Name, Z to A",
+        "sites_desc": "Site count, descending",
+    },
+    "performers": {
+        "name_asc": "Name, A to Z",
+        "name_desc": "Name, Z to A",
+        "scenes_desc": "Scene count, descending",
+        "birth_desc": "Birth date, newest first",
+        "birth_asc": "Birth date, oldest first",
+    },
 }
 
 CATALOG_LABELS = {
@@ -202,6 +235,9 @@ async def catalog_archive_handler(request: web.Request) -> web.Response:
         if entity == "scenes"
         else None
     )
+    sort = request.query.get("sort") or db.CATALOG_DEFAULT_SORT[entity]
+    if sort not in db.CATALOG_SORT_OPTIONS[entity]:
+        sort = db.CATALOG_DEFAULT_SORT[entity]
     try:
         page = max(1, int(request.query.get("page", "1")))
     except ValueError:
@@ -210,7 +246,7 @@ async def catalog_archive_handler(request: web.Request) -> web.Response:
 
     total = await db.count_catalog_entities(pool, entity, q, tag)
     records = await db.list_catalog_entities(
-        pool, entity, q=q, tag=tag, limit=PAGE_SIZE, offset=offset
+        pool, entity, q=q, tag=tag, sort=sort, limit=PAGE_SIZE, offset=offset
     )
     tags = await db.top_scene_tags(pool) if entity == "scenes" else []
     total_pages = max(1, math.ceil(total / PAGE_SIZE))
@@ -218,7 +254,7 @@ async def catalog_archive_handler(request: web.Request) -> web.Response:
     archive_path = "/" if entity == "scenes" else f"/{entity}"
 
     def page_url(**overrides) -> str:
-        params = {"q": q, "tag": tag, "page": page}
+        params = {"q": q, "tag": tag, "sort": sort, "page": page}
         params.update(overrides)
         query = urlencode({k: v for k, v in params.items() if v})
         return f"{archive_path}?{query}" if query else archive_path
@@ -231,6 +267,9 @@ async def catalog_archive_handler(request: web.Request) -> web.Response:
         q=q or "",
         tag=tag,
         tags=tags,
+        sort=sort,
+        sort_options=CATALOG_SORT_LABELS[entity],
+        archive_path=archive_path,
         total=total,
         total_fmt=f"{total:,}",
         total_all_fmt=f"{total_all:,}",

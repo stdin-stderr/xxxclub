@@ -252,7 +252,7 @@
 {% block content %}
 
 <div class="search-wrap">
-  <form class="search-row" method="get" action="/">
+  <form class="search-row" method="get" action="/torrents/">
     <input type="search" name="q" value="{{ q }}" placeholder="Search the archive by title or uploader&hellip;">
     <button type="submit">Search</button>
   </form>
@@ -281,7 +281,7 @@
 
 <div class="result-meta">
   <span>Showing <strong>{{ start }}&ndash;{{ end }}</strong> of {{ total_fmt }} catalogued entries</span>
-  <form class="sort-form" method="get" action="/">
+  <form class="sort-form" method="get" action="/torrents/">
     <input type="hidden" name="q" value="{{ q }}">
     {% if category %}<input type="hidden" name="category" value="{{ category }}">{% endif %}
     {% if tag %}<input type="hidden" name="tag" value="{{ tag }}">{% endif %}
